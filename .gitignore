@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+
+# agentdev runtime state (project-scoped) — never commit
+.agentdev/
+
+# pi project settings + subagent scratch — never commit
+.pi/
+.pi-subagents/
+
+# build artifacts
+dist/
+coverage/
+
+# logs
+*.log
+
+# env / secrets
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# editors
+.vscode/
+.idea/
+*.tgz

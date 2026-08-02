@@ -1,0 +1,189 @@
+name: agentdev CI
+
+# ARCHITECTURE.md §21/§24 — unit + integration on push; agentic evals and E2E
+# on schedule (nightly) + release tags only (cost control); packaging proof on
+# every push so the turnkey quickstart can never silently break.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *" # nightly: evals + E2E
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  HERDR_VERSION: "0.7.5"
+  PI_VERSION: "0.83.0"
+
+jobs:
+  unit:
+    name: unit (push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: typecheck
+        run: node node_modules/typescript/bin/tsc --noEmit
+      - name: unit tests
+        run: node node_modules/vitest/vitest.mjs run tests/unit
+
+  full:
+    name: full suite + audit (push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: dependency audit
+        run: npm audit --audit-level=high
+      - name: full suite (unit + integration; gated suites skip by default)
+        run: node node_modules/vitest/vitest.mjs run
+
+  packaging:
+    name: turnkey proof (push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: install herdr FIRST (setup.sh order — body before brain)
+        run: |
+          curl -fsSL https://herdr.dev/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: verify herdr pinned version
+        run: |
+          herdr --version | grep -q "$HERDR_VERSION" || { echo "herdr version mismatch"; exit 1; }
+      - run: npm ci --no-audit --no-fund
+      - name: run the documented quickstart (AC-INSTALL-1)
+        run: ./setup.sh
+      - name: prove /agentdev + skills are registered in pi
+        run: |
+          pi --mode rpc get_commands 2>/dev/null | grep -q "agentdev" || { echo "agentdev command missing"; exit 1; }
+          pi --mode rpc get_commands 2>/dev/null | grep -qE "choose-stack|define-constraints|define-language" || { echo "agentdev skills missing"; exit 1; }
+      - name: prove the install CLI works (isolated HOME)
+        run: |
+          CLI_HOME=$(mktemp -d)
+          HOME="$CLI_HOME" node bin/agentdev-install.mjs install
+          HOME="$CLI_HOME" pi --mode rpc get_commands 2>/dev/null | grep -q "agentdev" || { echo "CLI-installed extension missing"; exit 1; }
+          rm -rf "$CLI_HOME"
+
+  integration:
+    name: integration (real herdr + git, Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: install herdr FIRST
+        run: |
+          curl -fsSL https://herdr.dev/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: verify herdr pinned version
+        run: |
+          herdr --version | grep -q "$HERDR_VERSION" || { echo "herdr version mismatch"; exit 1; }
+      - run: npm ci --no-audit --no-fund
+      - name: integration tests (real herdr server + real git repos)
+        run: node node_modules/vitest/vitest.mjs run tests/integration
+      - name: fail when the real-substrate layer executed ZERO tests (skipIf masking)
+        run: |
+          OUTPUT=$(node node_modules/vitest/vitest.mjs run tests/integration 2>&1)
+          echo "$OUTPUT"
+          echo "$OUTPUT" | grep -qE "[0-9]+ passed" || { echo "no integration tests executed — herdr broken?"; exit 1; }
+
+  windows:
+    name: cross-platform smoke (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: unit + cross-platform smoke on native Windows
+        run: node node_modules/vitest/vitest.mjs run tests/unit tests/integration/cross-platform.test.ts
+
+  evals:
+    name: agentic evals (real models, nightly only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && secrets.ANTHROPIC_API_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: install pi CLI (evals drive real `pi -p` calls)
+        run: npm install -g @earendil-works/pi-coding-agent@${{ env.PI_VERSION }}
+      - run: npm ci --no-audit --no-fund
+      - name: run agentic evals
+        env:
+          AGENTDEV_EVAL: "1"
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node node_modules/vitest/vitest.mjs run tests/evals
+      - name: upload pass@k records
+        uses: actions/upload-artifact@v4
+        with:
+          name: passk
+          path: .agentdev/passk.jsonl
+
+  evals-watchdog:
+    name: evals watchdog (fail after 3 skipped nights)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [evals]
+    if: ${{ always() && github.event_name == 'schedule' }}
+    steps:
+      - run: |
+          if [ "${{ needs.evals.result }}" = "skipped" ]; then
+            echo "evals were skipped (API key missing?) — flagging for attention"
+            exit 1
+          fi
+          exit 0
+
+  e2e:
+    name: E2E (AC-DOD-1, nightly + release only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: install herdr FIRST
+        run: |
+          curl -fsSL https://herdr.dev/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: verify herdr pinned version
+        run: |
+          herdr --version | grep -q "$HERDR_VERSION" || { echo "herdr version mismatch"; exit 1; }
+      - run: npm ci --no-audit --no-fund
+      - name: full pipeline E2E (real orchestrator, real herdr + git, recorded agents)
+        env:
+          AGENTDEV_E2E: "1"
+        run: node node_modules/vitest/vitest.mjs run tests/e2e
