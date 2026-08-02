@@ -1,0 +1,71 @@
+# specs/planning-context.yaml
+# Written by elaborate-spec (dialogue). Consumed by scope-work / slice-tasks / plan-work.
+# Status: design LOCKED, v1 implemented (2026-08-02).
+
+feature_name: "agentdev"
+problem_statement: >
+  Running several coding-agent sessions in parallel today means babysitting
+  terminals, hand-copying context between sessions, and losing track of which
+  needs attention. There is no single, turnkey way to talk to one liaison agent
+  that plans with you and then autonomously drives a visible, hierarchical crew
+  (planner → builders → reviewers) to a commit-ready result, with full code
+  review until clean, on any OS, reattachable from anywhere.
+
+constraints:
+  - "Final form is a turnkey git distro that installs as / runs as a pi extension (the brain) driving herdr (the body)."
+  - "Install order: herdr first, then the agentdev brain."
+  - "Cross-platform: Windows, WSL, and Linux are mandatory, first-class targets. Native-Windows crew fidelity tracks herdr-Windows beta; WSL-on-Windows = full support. No tmux fallback."
+  - "All agent roles (Leader, Subleader, Subworker, Reviewer, consensus agents) run as real herdr panes (visible, watch + type, persistent, remote-reattachable)."
+  - "Manual -> Autopilot boundary: operator drives Discover/Design/define-constraints/mode; once ralplan is entered, the crew runs autonomously to commit-ready."
+  - "No autonomous git commits by default. Crew stops at commit-ready; commit/push only on operator confirmation. +yolo (opt-in) is the only mode that auto-commits."
+  - "Leader tracks all branches + all uncommitted changes across the crew (durable git-state map). main is protected; guard-git + hook-commits wired in."
+  - "Hierarchy is recursive but gated to 3 tiers in v1 (Leader/Subleader/Subworker); N-level recursion deferred."
+  - "v1 is herdr-API-only (no companion plugin) and herdr-only backend behind a pluggable BackendAdapter interface."
+  - "Slicing reuses bigpowers (scope-work/slice-tasks/plan-work); no custom ML slicer in v1."
+  - "Restart-proof: all state on disk; herdr keeps panes alive; reconnect/resume on restart."
+  - "bigpowers define-language = DDD ubiquitous-language glossary (NOT programming-language selection); stack selection is a separate choose-stack step."
+
+out_of_scope:
+  - "Cost / token budgeting (deferred)."
+  - "Arbitrary N-level recursion (3 tiers in v1)."
+  - "Custom ML plan slicer (reuse bigpowers)."
+  - "Companion herdr plugin (per-role color) — minimal plugin possible later if labels are insufficient."
+  - "GUI / web dashboard (herdr is the surface)."
+  - "Learned-preferences / cross-project knowledge base."
+
+key_decisions:
+  - decision: "Substrate is herdr (Apache-2.0), not raw tmux."
+    rationale: "herdr is purpose-built, open, free, and provides panes/PTYs/agent-state/control-API/persistence/remote-attach for free."
+  - decision: "Brain = pi extension; body = herdr; brain drives body via herdr API."
+    rationale: "Clean separation of orchestration logic (portable, cross-platform TS) from multiplexing infra."
+  - decision: "Subleader owns exactly 1 plan/epic; Subworker owns exactly 1 story + own worktree."
+    rationale: "Clean 1:1 mapping that makes the recursive abstraction simple and parallel-safe."
+  - decision: "ralplan consensus = Planner -> Architect -> Senior Dev -> Critic (Senior Dev added to oh-my-claudecode's technique)."
+    rationale: "Multi-agent plan iteration until Critic APPROVE; Senior Dev adds practical feasibility/idiom review."
+  - decision: "Manual -> Autopilot boundary at ralplan entry."
+    rationale: "Human in the loop for scope/risk/stack/mode; full autonomy after, to commit-ready."
+  - decision: "define-constraints is option-driven (Leader surfaces tailored candidates, operator curates)."
+    rationale: "Reduces operator burden; pre-filled checklist, not a blank exam."
+  - decision: "Commit-ready gate by default; +yolo opt-in bypasses it (auto-commit)."
+    rationale: "Safe by default, autonomous by explicit opt-in."
+  - decision: "Toggle OFF by default; ON is session-scoped (resets on terminal close)."
+    rationale: "Non-intrusive; plain pi stays plain until the crew is intentionally engaged."
+  - decision: "Default project mode = direct-PR."
+    rationale: "Autopilot completes when a clean reviewed PR is open; merge stays the captain's call."
+  - decision: "Autoclose on clean completion (brief flash); failures stay -> handle -> close."
+    rationale: "Keeps the surface clean without hiding problems."
+  - decision: "6 code-review lenses (Senior SWE, Efficiency, Security, API/Contract, Reliability, Domain), looped until no actionable findings."
+    rationale: "Context-appropriate engineering-quality bar; Reliability added per operator request."
+
+actors:
+  - "Operator (captain) — the human; drives the manual phase, confirms commits, receives escalations."
+  - "Leader — top orchestrator + operator liaison; Discover/Design/Plan + final Integrate."
+  - "Subleader — nested orchestrator owning 1 plan/epic."
+  - "Subworker — build leaf owning 1 story + worktree."
+  - "Reviewer — review leaf (one lens per pass)."
+  - "ralplan consensus agents — Planner, Architect, Senior Dev, Critic (planning-time)."
+
+target_platforms: ["Windows (native, tracks herdr-beta)", "WSL (full)", "Linux (full)"]
+primary_dev_environment: "WSL"
+repo_path: "C:\\Users\\OTIF\\Desktop\\agentdev"
+delivery: "Turnkey git distro + pi package (npm/git). Clone -> install herdr -> run."

@@ -1,0 +1,14 @@
+# Dependabot: keep the toolchain current WITHOUT opening branches/PRs —
+# the repo keeps a single branch (main) by design.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
