@@ -4,10 +4,14 @@
  * for verification/context, and the operator (via the extension UI) for the
  * manual interview + commit confirmation. Tests inject recorded fakes; these
  * are the REAL agents.
+ *
+ * NON-BLOCKING CONTRACT: every port is async (spawn/execFile, never
+ * spawnSync/execFileSync). The crew runs inside the interactive pi process;
+ * a synchronous child call would freeze pi's event loop for minutes and the
+ * operator could not type while the crew worked.
  */
 
-import { spawnSync } from "node:child_process";
-import { execFileSync } from "node:child_process";
+import { spawnCollect, execCollect } from "./proc";
 import { builderPrompt, frameUntrusted } from "./agent-prompts";
 import { verifyWork } from "./verify-work";
 import { generateCandidates, createInterview, CATEGORY_ORDER, type ConstraintCategory } from "./define-constraints";
@@ -29,16 +33,17 @@ export interface RealPortsOptions {
   piBin?: string;
 }
 
-/** Ask a REAL pi agent (headless `pi -p`). */
-export function askPi(prompt: string, timeoutMs = 300_000, piBin = "pi"): string {
-  const r = spawnSync(piBin, ["-p", frameUntrusted(prompt)], {
-    encoding: "utf8",
-    timeout: timeoutMs,
-  });
-  if (r.status !== 0) {
-    throw new Error(`pi agent call failed (${r.status}): ${(r.stderr ?? "").slice(0, 300)}`);
+/** Ask a REAL pi agent (headless `pi -p`). Async — never blocks the session. */
+export async function askPi(prompt: string, timeoutMs = 300_000, piBin = "pi"): Promise<string> {
+  try {
+    const r = await spawnCollect(piBin, ["-p", frameUntrusted(prompt)], { timeoutMs });
+    return r.stdout.trim();
+  } catch (e) {
+    const err = e as { code?: number | null; stderr?: string; message?: string; timedOut?: boolean };
+    throw new Error(
+      `pi agent call failed (${err.code ?? "?"}${err.timedOut ? ", timed out" : ""}): ${(err.stderr ?? err.message ?? "").slice(0, 300)}`,
+    );
   }
-  return r.stdout.trim();
 }
 
 export function createRealPorts(opts: RealPortsOptions): OrchestratorPorts {
@@ -59,20 +64,24 @@ export function createRealPorts(opts: RealPortsOptions): OrchestratorPorts {
 
   return {
     adapter: undefined as never, // filled by the extension (single herdr touchpoint)
-    ask(prompt, timeoutMs) {
+    async ask(prompt, timeoutMs) {
       return askPi(prompt, timeoutMs ?? 300_000, piBin);
     },
-    buildStory(ctx) {
+    async buildStory(ctx) {
       const prompt = builderPrompt(ctx.goalId, ctx.storyId, ctx.criteria);
-      const r = spawnSync(piBin, ["-p", frameUntrusted(prompt)], {
-        cwd: ctx.worktree,
-        encoding: "utf8",
-        timeout: 600_000,
-      });
-      if (r.status !== 0) {
-        throw new Error(`subworker agent failed (${r.status}): ${(r.stderr ?? "").slice(0, 300)}`);
+      let out: string;
+      try {
+        const r = await spawnCollect(piBin, ["-p", frameUntrusted(prompt)], {
+          cwd: ctx.worktree,
+          timeoutMs: 600_000,
+        });
+        out = r.stdout.trim();
+      } catch (e) {
+        const err = e as { code?: number | null; stderr?: string; message?: string; timedOut?: boolean };
+        throw new Error(
+          `subworker agent failed (${err.code ?? "?"}${err.timedOut ? ", timed out" : ""}): ${(err.stderr ?? err.message ?? "").slice(0, 300)}`,
+        );
       }
-      const out = r.stdout.trim();
       if (/STORY_BLOCKED/.test(out)) {
         throw new Error(`subworker blocked: ${out.slice(0, 300)}`);
       }
@@ -80,14 +89,13 @@ export function createRealPorts(opts: RealPortsOptions): OrchestratorPorts {
     verifyStory(worktree) {
       return verifyWork(worktree);
     },
-    sliceContext(_worktree, lens) {
+    async sliceContext(_worktree, lens) {
       // goal-level context: recent git diff + worktree file listing
       try {
-        const diff = execFileSync("git", ["diff", "HEAD", "--stat", "--", ".", ":(exclude).agentdev"], {
-          encoding: "utf8",
-          timeout: 15_000,
+        const r = await execCollect("git", ["diff", "HEAD", "--stat", "--", ".", ":(exclude).agentdev"], {
+          timeoutMs: 15_000,
         });
-        return `# git diff --stat (HEAD)\n${diff.slice(0, 4000)}\n# lens: ${lens}`;
+        return `# git diff --stat (HEAD)\n${r.stdout.slice(0, 4000)}\n# lens: ${lens}`;
       } catch {
         return `# (no git diff available) lens: ${lens}`;
       }

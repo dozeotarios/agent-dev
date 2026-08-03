@@ -32,7 +32,7 @@ import { autocloseDecision } from "./autoclose";
 import { createFleet, type Fleet, type FleetNode } from "./fleet";
 import { roleLabel } from "./roles";
 import { saveFleet, loadFleet, reconcileFleet } from "./state";
-import { verifyWork, type VerifyResult } from "./verify-work";
+import type { VerifyResult } from "./verify-work";
 import { collectGitState, parseBranch, parsePorcelain, type WorktreeGitState } from "./git-state";
 import { requiresConfirm, type ProjectMode } from "./modes";
 import type { ReviewConstraints } from "./review";
@@ -70,14 +70,15 @@ export interface ReviewRoundInput {
 
 export interface OrchestratorPorts {
   adapter: BackendAdapter;
-  /** Real: `pi -p`; tests: recorded transcripts. */
-  ask(prompt: string, timeoutMs?: number): string;
+  /** Real: `pi -p`; tests: recorded transcripts. May be async (real ports) so
+   *  the pi session stays interactive while the crew runs. */
+  ask(prompt: string, timeoutMs?: number): string | Promise<string>;
   /** Real: pi Subworker agent in the worktree; tests: recorded/fixture. */
-  buildStory(ctx: BuildContext): void;
+  buildStory(ctx: BuildContext): void | Promise<void>;
   /** Real: `npm test` in the worktree; tests: fake. */
-  verifyStory(worktree: string): VerifyResult;
+  verifyStory(worktree: string): VerifyResult | Promise<VerifyResult>;
   /** Code context for a review lens (real: diff/scan; tests: fixture). */
-  sliceContext(worktree: string, lens: string): string;
+  sliceContext(worktree: string, lens: string): string | Promise<string>;
   /** Operator confirmation for the commit gate (real: /agentdev confirm). */
   confirmCommit(goalId: string, summary: string): boolean | Promise<boolean>;
   /** Operator interview for define-constraints + mode (real: interactive). */
@@ -276,7 +277,7 @@ export function createOrchestrator(
             : role !== "planner"
               ? `\nCurrent plan: ${planOutput ? JSON.stringify(planOutput).slice(0, 1500) : "(none)"}`
               : "";
-      let out = ports.ask(
+      let out = await ports.ask(
         role === "planner"
           ? `You are the Planner in a consensus-planning loop. ${goalLine}Emit ONLY JSON: { "principles": [3-5 strings], "drivers": [exactly 3 strings], "options": [{"name","pros":[...],"cons":[...]} x >=2], "adr": { "decision", "drivers":[...], "alternatives":[...], "why", "consequences":[...], "followups":[...] }, "acceptanceCriteria": [>=3 testable strings] }. No prose.${hint}`
           : role === "architect"
@@ -288,7 +289,7 @@ export function createOrchestrator(
       if (role === "planner") {
         planOutput = parsePlanOutput(out);
         if (!planOutput) {
-          out = ports.ask(
+          out = await ports.ask(
             `You are the Planner in a consensus-planning loop. Goal: "${p.goalText}"${p.stack ? ` (stack: ${p.stack})` : ""}. Emit ONLY JSON: { "principles": [3-5 strings], "drivers": [exactly 3 strings], "options": [{"name","pros":[...],"cons":[...]} x >=2], "adr": { "decision", "drivers":[...], "alternatives":[...], "why", "consequences":[...], "followups":[...] }, "acceptanceCriteria": [>=3 testable strings] }. No prose.`,
           );
           planOutput = parsePlanOutput(out);
@@ -360,8 +361,8 @@ export function createOrchestrator(
       let attempt = 1;
       // self-heal flaky builds, escalate after budget (AC-ESCAL-1/2)
       for (;;) {
-        ports.buildStory({ goalId: p.goalId, storyId: w.storyId, worktree: w.worktreePath, criteria: p.storyCriteria[w.storyId] ?? [] });
-        const v: VerifyResult = ports.verifyStory(w.worktreePath);
+        await ports.buildStory({ goalId: p.goalId, storyId: w.storyId, worktree: w.worktreePath, criteria: p.storyCriteria[w.storyId] ?? [] });
+        const v: VerifyResult = await ports.verifyStory(w.worktreePath);
         if (v.ok) break;
         const d = tracker.handle({ branchId: w.storyId, kind: "build-failure", attempt });
         if (!d.escalate) {
@@ -390,8 +391,8 @@ export function createOrchestrator(
     while (!loop.isComplete() && round <= 6) {
       const findings: Finding[] = [];
       for (const lens of LENSES) {
-        const ctx = ports.sliceContext("", lens); // orchestrator-level context
-        const out = ports.ask(
+        const ctx = await ports.sliceContext("", lens); // orchestrator-level context
+        const out = await ports.ask(
           `You are the ${lens} reviewer in a code review. Validate the code against this operator-defined checklist:\n${(checklist[lens] ?? []).map((c) => `- ${c}`).join("\n")}\n\nFind BLOCKING issues. Reply with findings, one per line, each starting with exactly "BLOCKING: " or "NIT: ":\n\n${ctx.slice(0, 12_000)}`,
         );
         for (const line of out.split("\n")) {

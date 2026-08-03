@@ -2,9 +2,12 @@
  * verify-work (ARCHITECTURE.md §9, AC-VERIFY-1) — each Subleader runs
  * verification on its slice before review. Deterministic wrapper: runs the
  * project's test command in the worktree and reports pass/fail + output.
+ *
+ * ASYNC: runs via execFile so a long `npm test` never blocks the interactive
+ * pi session (the crew pipeline shares its process).
  */
 
-import { execFileSync } from "node:child_process";
+import { execCollect } from "./proc";
 
 export interface VerifyResult {
   ok: boolean;
@@ -14,18 +17,16 @@ export interface VerifyResult {
 
 const DEFAULT_TEST_COMMAND = ["npm", "test"];
 
-export function verifyWork(
+export async function verifyWork(
   worktree: string,
   command: string[] = DEFAULT_TEST_COMMAND,
-): VerifyResult {
+): Promise<VerifyResult> {
   try {
-    const output = execFileSync(command[0], command.slice(1), {
+    const r = await execCollect(command[0], command.slice(1), {
       cwd: worktree,
-      encoding: "utf8",
-      timeout: 300_000,
-      stdio: ["ignore", "pipe", "pipe"],
+      timeoutMs: 300_000,
     });
-    return { ok: true, output: output.slice(-2000), command: command.join(" ") };
+    return { ok: true, output: r.stdout.slice(-2000), command: command.join(" ") };
   } catch (e) {
     const err = e as { stdout?: unknown; stderr?: unknown; message?: string };
     const output = [err.stdout, err.stderr, err.message]

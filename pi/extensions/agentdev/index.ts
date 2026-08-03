@@ -182,8 +182,14 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
         if (!prompt) return;
         goals.add(prompt); // AC-TOGGLE-5: message = goal (own sub-tree, AC-TOGGLE-6)
         const o = ensureOrchestrator();
-        o.start(prompt).catch((e) => {
-          console.error(`[agentdev] goal pipeline failed: ${e instanceof Error ? e.message : String(e)}`);
+        // Defer the pipeline: never run goal setup synchronously inside the
+        // hook. The crew must not block the interactive session — the whole
+        // point of agentdev is you keep typing while it follows the
+        // methodology in the background.
+        setImmediate(() => {
+          o.start(prompt).catch((e) => {
+            console.error(`[agentdev] goal pipeline failed: ${e instanceof Error ? e.message : String(e)}`);
+          });
         });
       });
 

@@ -101,14 +101,14 @@ describe("planToStories (ralplan → dispatch bridge)", () => {
 });
 
 describe("verify-work (AC-VERIFY-1)", () => {
-  it("returns ok=false with output on a failing command", () => {
-    const r = verifyWork(tmpdir(), ["node", "-e", "process.exit(1)"]);
+  it("returns ok=false with output on a failing command", async () => {
+    const r = await verifyWork(tmpdir(), ["node", "-e", "process.exit(1)"]);
     expect(r.ok).toBe(false);
     expect(r.output.length).toBeGreaterThan(0);
   });
 
-  it("returns ok=true on success", () => {
-    const r = verifyWork(tmpdir(), ["node", "-e", "console.log('hi')"]);
+  it("returns ok=true on success", async () => {
+    const r = await verifyWork(tmpdir(), ["node", "-e", "console.log('hi')"]);
     expect(r.ok).toBe(true);
   });
 });
