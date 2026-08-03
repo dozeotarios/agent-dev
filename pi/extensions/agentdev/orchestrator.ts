@@ -575,7 +575,7 @@ export function createOrchestrator(
         mode: p.mode,
         filePlan: p.plan?.filePlan,
       });
-      const fixOutcome = await ports.waitForWorker(fix);
+      const fixOutcome = await ports.waitForWorker(fix, { timeoutMs: 4_500_000 });
       if (fixOutcome !== "done") {
         ports.notify(`agentdev: fix worker ${fixOutcome} — pane left open`, "warning");
         throw new Error(`integration fix worker ${fixOutcome}`);
@@ -650,7 +650,7 @@ export function createOrchestrator(
           mode: p.mode,
           filePlan: p.plan?.filePlan,
         });
-        const fixOutcome = await ports.waitForWorker(fix);
+        const fixOutcome = await ports.waitForWorker(fix, { timeoutMs: 4_500_000 });
         if (fixOutcome !== "done") {
           ports.notify(`agentdev: review fix worker ${fixOutcome} — pane left open`, "warning");
           throw new Error(`review fix worker ${fixOutcome}`);
