@@ -99,6 +99,8 @@ export interface OrchestratorPorts {
     workers: string[];
   }): CrewWorker | Promise<CrewWorker>;
   sendToSubleader(w: CrewWorker, text: string): void | Promise<void>;
+  /** Merge every worker branch into a fresh staging worktree (AC-BUILD-INT). */
+  stageMerge(input: { baseRepo: string; branches: string[] }): string | Promise<string>;
   /** Real: pi Subworker agent in the worktree; tests: recorded/fixture. */
   buildStory(ctx: BuildContext): void | Promise<void>;
   /** Real: `npm test` in the worktree; tests: fake. */
@@ -137,6 +139,8 @@ interface PersistedGoal {
   storyCriteria: Record<string, string[]>;
   /** Per-story disjoint file sets from the plan split (AC-PLAN-STORIES). */
   storyFiles: Record<string, import("./ralplan").PlanStoryFiles>;
+  /** Integration staging worktree (all stories merged, verified, reviewed). */
+  stagingWorktree: string | null;
   gate: GateState | null;
 }
 
@@ -505,50 +509,35 @@ export function createOrchestrator(
     if (p.step !== "build") return;
     const f = fleet(p.goalId);
     const workers = loadWorkers(cwd, p);
+    // 1) BUILD phase — each story worker spawns in its own worktree (disjoint
+    //    files), works, and delivers its report. No per-worktree suite run:
+    //    story tests legitimately need sibling stories' files.
     for (const w of workers) {
-      let attempt = 1;
-      // self-heal flaky builds, escalate after budget (AC-ESCAL-1/2)
-      for (;;) {
-        const worker = await ports.spawnWorker({
-          goalId: p.goalId,
-          storyId: w.storyId,
-          worktree: w.worktreePath,
-          criteria: p.storyCriteria[w.storyId] ?? [],
-          goalText: p.goalText,
-          stack: p.stack,
-          mode: p.mode,
-          filePlan: p.plan?.filePlan,
-          storyFiles: p.storyFiles[w.storyId],
-        });
-        try {
-          f.setPaneId(w.storyId, worker.paneId); // fleet node id == storyId
-        } catch {
-          /* node may not exist in resumed runs */
-        }
-        // supervise to the report contract (non-blocking polls)
-        const outcome = await ports.waitForWorker(worker);
-        if (outcome !== "done") {
-          ports.notify(
-            `agentdev: ${w.storyId} worker ${outcome} — pane left open for inspection`,
-            "warning",
-          );
-          throw new Error(`subworker ${w.storyId} ${outcome}`);
-        }
-        const v: VerifyResult = await ports.verifyStory(w.worktreePath);
-        if (v.ok) {
-          await ports.teardownWorker(worker); // green → close the pane
-          break;
-        }
-        // verify failed → keep the pane open, spawn a fresh worker for retry
-        await ports.teardownWorker(worker, true);
-        const d = tracker.handle({ branchId: w.storyId, kind: "build-failure", attempt });
-        if (!d.escalate) {
-          attempt += 1;
-          ports.notify(`agentdev: ${w.storyId} verify failed — retry ${attempt - 1}/${3}`, "warning");
-          continue;
-        }
-        throw new Error(`build failed for ${w.storyId} (retries exhausted): ${v.output.slice(0, 300)}`);
+      const worker = await ports.spawnWorker({
+        goalId: p.goalId,
+        storyId: w.storyId,
+        worktree: w.worktreePath,
+        criteria: p.storyCriteria[w.storyId] ?? [],
+        goalText: p.goalText,
+        stack: p.stack,
+        mode: p.mode,
+        filePlan: p.plan?.filePlan,
+        storyFiles: p.storyFiles[w.storyId],
+      });
+      try {
+        f.setPaneId(w.storyId, worker.paneId); // fleet node id == storyId
+      } catch {
+        /* node may not exist in resumed runs */
       }
+      const outcome = await ports.waitForWorker(worker);
+      if (outcome !== "done") {
+        ports.notify(
+          `agentdev: ${w.storyId} worker ${outcome} — pane left open for inspection`,
+          "warning",
+        );
+        throw new Error(`subworker ${w.storyId} ${outcome}`);
+      }
+      await ports.teardownWorker(worker); // delivered → close the pane
       try {
         f.setStatus(w.storyId, "done");
       } catch {
@@ -556,6 +545,44 @@ export function createOrchestrator(
       }
       persist(p, f.nodes());
     }
+    // 2) INTEGRATION — stage-merge every worker branch into a fresh worktree
+    //    and run the FULL suite there. A merge conflict means the story split
+    //    was NOT disjoint → fail loudly (AC-PLAN-STORIES enforcement).
+    const branches = workers.map((w) => currentBranchOf(w.worktreePath)).filter((b): b is string => !!b);
+    let staging = await ports.stageMerge({ baseRepo, branches });
+    let attempt = 1;
+    for (;;) {
+      const v: VerifyResult = await ports.verifyStory(staging);
+      if (v.ok) break;
+      const d = tracker.handle({ branchId: "integration", kind: "build-failure", attempt });
+      if (d.escalate) {
+        throw new Error(`integration verify failed (retries exhausted): ${v.output.slice(0, 300)}`);
+      }
+      attempt += 1;
+      ports.notify(`agentdev: integration verify failed — fix worker ${attempt - 1}/${3}`, "warning");
+      // spawn a FIX worker in the staging worktree with the failure output
+      const union = new Set<string>();
+      for (const st of Object.values(p.storyFiles)) {
+        for (const f of [...st.create, ...st.modify]) union.add(f);
+      }
+      const fix = await ports.spawnWorker({
+        goalId: p.goalId,
+        storyId: "integration-fix",
+        worktree: staging,
+        criteria: [`make the merged suite green`],
+        goalText: p.goalText,
+        stack: p.stack,
+        mode: p.mode,
+        filePlan: p.plan?.filePlan,
+      });
+      const fixOutcome = await ports.waitForWorker(fix);
+      if (fixOutcome !== "done") {
+        ports.notify(`agentdev: fix worker ${fixOutcome} — pane left open`, "warning");
+        throw new Error(`integration fix worker ${fixOutcome}`);
+      }
+      await ports.teardownWorker(fix);
+    }
+    p.stagingWorktree = staging;
     p.step = "review";
     persist(p);
   }
@@ -564,17 +591,13 @@ export function createOrchestrator(
     if (p.step !== "review") return;
     const checklist = constraintsToChecklist(p.constraints);
     const loop = createReviewLoop(5);
-    const reviewWorkers = loadWorkers(cwd, p);
+    const reviewWorktree = p.stagingWorktree ?? cwd;
     let round = 1;
     while (!loop.isComplete() && round <= 6) {
       const findings: Finding[] = [];
       for (const lens of LENSES) {
-        // review the REAL code: each worker's worktree diff, combined
-        const contexts: string[] = [];
-        for (const w of reviewWorkers) {
-          contexts.push(await ports.sliceContext(w.worktreePath, lens));
-        }
-        const ctx = contexts.join("\n\n===== next worktree =====\n\n");
+        // review the REAL code: the merged staging worktree diff
+        const ctx = await ports.sliceContext(reviewWorktree, lens);
         const scope = p.plan?.filePlan
           ? `\n\nTOUCH-PLAN (SCOPE BOUNDARY — binding):\nstructure: ${p.plan.filePlan.structure}\ncreate: ${p.plan.filePlan.create.join(", ")}\nmodify: ${p.plan.filePlan.modify.join(", ")}\ndoNotTouch: ${p.plan.filePlan.doNotTouch.join(", ")}\nAny work touching files outside this map is a BLOCKING scope violation.`
           : "";
@@ -650,11 +673,20 @@ export function createOrchestrator(
       save: (s) => writeJson(gateFile(goalDir(cwd, p.goalId)), s),
     });
     const workers = loadWorkers(cwd, p);
-    for (const w of workers) {
-      const r = performCommit(gate, w.worktreePath, `feat(${w.storyId}): ${p.goalText.slice(0, 60)}`, {
+    const target = p.stagingWorktree;
+    if (target) {
+      const r = performCommit(gate, target, `feat: ${p.goalText.slice(0, 60)}`, {
         ...(gitRunner ? { git: gitRunner } : {}),
       });
-      ports.notify(`agentdev: committed ${w.storyId} → ${r.hash ?? "skipped"}`);
+      ports.notify(`agentdev: committed staging → ${r.hash ?? "skipped"}`);
+    } else {
+      // legacy resume path: per-worktree commits
+      for (const w of workers) {
+        const r = performCommit(gate, w.worktreePath, `feat(${w.storyId}): ${p.goalText.slice(0, 60)}`, {
+          ...(gitRunner ? { git: gitRunner } : {}),
+        });
+        ports.notify(`agentdev: committed ${w.storyId} → ${r.hash ?? "skipped"}`);
+      }
     }
     // durable git-state map (AC-GIT-3): branches.json per goal
     const worktrees: WorktreeGitState[] = workers.map((w) => ({
@@ -704,6 +736,7 @@ export function createOrchestrator(
         mode: "direct-PR",
         storyCriteria: {},
         storyFiles: {},
+        stagingWorktree: null,
         gate: null,
       };
       liveGoals.add(goalId); // the interactive leader turn will hand its plan

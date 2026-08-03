@@ -80,6 +80,7 @@ function fakePorts(overrides: Partial<OrchestratorPorts> = {}): OrchestratorPort
       reportPath: "",
     }),
     sendToSubleader: () => undefined,
+    stageMerge: () => tmpdir(),
     verifyStory: () => ({ ok: true, output: "ok", command: "npm test" }),
     sliceContext: () => "// fixture code context",
     confirmCommit: () => true,

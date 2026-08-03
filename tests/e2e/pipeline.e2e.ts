@@ -127,6 +127,7 @@ describe.skipIf(!enabled || !herdr.present || !serverUp || !gitPresent())(
           reportPath: "",
         }),
         sendToSubleader: () => undefined,
+        stageMerge: () => tmpdir(),
         verifyStory: () => ({ ok: true, output: "ok", command: "npm test" }),
         sliceContext: () => "// e2e fixture slice",
         confirmCommit: () => true, // operator confirms (recorded)
@@ -194,6 +195,7 @@ describe.skipIf(!enabled || !herdr.present || !serverUp || !gitPresent())(
           reportPath: "",
         }),
         sendToSubleader: () => undefined,
+        stageMerge: () => tmpdir(),
         verifyStory: () => ({ ok: true, output: "ok", command: "npm test" }),
         sliceContext: () => "",
         confirmCommit: () => true,

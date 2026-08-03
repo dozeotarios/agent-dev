@@ -113,6 +113,23 @@ export function createRealPorts(opts: RealPortsOptions): OrchestratorPorts {
     async sendToSubleader(w, text) {
       ports.adapter.agentPrompt(w.name, text);
     },
+    async stageMerge({ baseRepo, branches }) {
+      const { execFileSync } = await import("node:child_process");
+      const { mkdtempSync } = await import("node:fs");
+      const { tmpdir } = await import("node:os");
+      const { join } = await import("node:path");
+      const staging = mkdtempSync(join(tmpdir(), "agentdev-stage-"));
+      const branch = `agentdev-stage-${Date.now().toString(36)}`;
+      execFileSync("git", ["-C", baseRepo, "worktree", "add", staging, "-b", branch], { stdio: "ignore", timeout: 60_000 });
+      for (const b of branches) {
+        try {
+          execFileSync("git", ["-C", staging, "merge", "--no-ff", "-m", `merge ${b}`, b], { stdio: "ignore", timeout: 60_000 });
+        } catch (e) {
+          throw new Error(`stage merge of ${b} failed (stories overlap?): ${(e as Error).message.slice(0, 200)}`);
+        }
+      }
+      return staging;
+    },
     verifyStory(worktree) {
       return verifyWork(worktree);
     },

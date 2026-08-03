@@ -62,6 +62,37 @@ export function sanitizeAgentName(prefix: string, id: string): string {
   return name;
 }
 
+/** Uniqueness suffix — retries/fix workers must never collide with a live pane. */
+export function uniqueAgentName(prefix: string, id: string): string {
+  const base = sanitizeAgentName(prefix, id);
+  const suffix = Date.now().toString(36).slice(-4);
+  return `${base.slice(0, 27)}-${suffix}`;
+}
+
+/** Integration-fix brief: the merged suite fails; fix it, report when green. */
+export function fixBrief(
+  goalText: string,
+  files: string[],
+  failures: string,
+  reportPath: string,
+): string {
+  return `You are a Fix Worker in the agentdev crew. The INTEGRATION verify of the merged stories failed.
+
+GOAL: ${goalText}
+
+The merged test suite output (failure tail):
+${failures.slice(-2500)}
+
+You may modify ONLY these files (the union of all stories' scope):
+${files.join(", ") || "(any file in this worktree)"}
+
+Fix the failing tests (agentdev-build rules: tests first where new behavior is needed). When the FULL suite passes, write your report to ${reportPath} with EXACTLY:
+STORY_DONE
+<2-3 lines: what was broken and what you fixed>
+(or STORY_BLOCKED: <reason>)
+Then reply with exactly one line: STORY_DONE — or STORY_BLOCKED: <reason>.`;
+}
+
 function readFileSafe(path: string): string | null {
   try {
     return readFileSync(path, "utf8");
@@ -129,7 +160,7 @@ export function spawnWorker(
   opts: { cwd: string },
 ): CrewWorker {
   const ref = adapter.workspaceCreate({ cwd: ctx.worktree, label: `W: ${ctx.storyId}` });
-  const name = sanitizeAgentName("worker", ctx.storyId);
+  const name = uniqueAgentName("worker", ctx.storyId);
   adapter.agentStart(name, "pi", ref.paneId);
   // report lives in the goal's dir under the MAIN checkout — the worker
   // writes it there (absolute path), never into the repo's git tree
@@ -225,7 +256,7 @@ export function spawnSubleader(
   input: { goalId: string; goalText: string; plan: string; workers: string[] },
 ): CrewWorker {
   const ref = adapter.workspaceCreate({ cwd: process.cwd(), label: `S: ${input.goalId}` });
-  const name = sanitizeAgentName("subleader", input.goalId);
+  const name = uniqueAgentName("subleader", input.goalId);
   adapter.agentStart(name, "pi", ref.paneId);
   adapter.agentPrompt(
     ref.paneId,
