@@ -39,6 +39,8 @@ export interface CrewBriefInput {
   mode: string;
   worktree: string;
   reportPath: string;
+  /** Granular touch map from the plan (AC-PLAN-FILES) — binding scope. */
+  filePlan?: { structure: string; create: string[]; modify: string[]; doNotTouch: string[] };
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -64,6 +66,14 @@ STACK: ${input.stack ?? "(auto)"}  MODE: ${input.mode}
 
 ACCEPTANCE CRITERIA for your slice (your contract — every one must be verifiable):
 ${input.criteria.map((c) => `- ${c}`).join("\n")}
+
+TOUCH PLAN (SCOPE BOUNDARY — binding, from the approved plan):
+${input.filePlan
+    ? `structure: ${input.filePlan.structure}
+create ONLY: ${input.filePlan.create.join(", ") || "(none)"}
+modify ONLY: ${input.filePlan.modify.join(", ") || "(none)"}
+do NOT touch: ${input.filePlan.doNotTouch.join(", ") || "(nothing restricted)"}`
+    : "(no file plan provided — stay inside your worktree and your story)"}
 
 RULES (binding):
 - Follow agentdev-build: write the failing test FIRST, then implement until green (red-green-refactor, vertical slices). Tests must be F.I.R.S.T.
@@ -121,6 +131,7 @@ export function spawnWorker(
       mode: ctx.mode ?? "direct-PR",
       worktree: ctx.worktree,
       reportPath,
+      filePlan: ctx.filePlan,
     }),
   );
   return {

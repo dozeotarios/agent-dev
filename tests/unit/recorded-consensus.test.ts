@@ -14,7 +14,7 @@ interface RecordedRound {
   round: number;
   planner: { content: string };
   architect: { content: string };
-  "senior-dev": { content: string };
+  "developer": { content: string };
   critic: { content: string; verdict: "approve" | "iterate" | "reject" };
 }
 
@@ -34,8 +34,8 @@ describe("recorded consensus replay — deterministic regression", () => {
       loop.submit({ role: "planner", content: round.planner.content });
       expect(loop.state().expectedRole).toBe("architect");
       loop.submit({ role: "architect", content: round.architect.content });
-      expect(loop.state().expectedRole).toBe("senior-dev");
-      loop.submit({ role: "senior-dev", content: round["senior-dev"].content });
+      expect(loop.state().expectedRole).toBe("developer");
+      loop.submit({ role: "developer", content: round["developer"].content });
       expect(loop.state().expectedRole).toBe("critic");
       loop.submit({
         role: "critic",

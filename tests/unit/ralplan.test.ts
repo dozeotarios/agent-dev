@@ -16,13 +16,13 @@ describe("consensus loop (AC-RALPLAN-1..5)", () => {
     expect(loop.state().round).toBe(1);
   });
 
-  it("happy path: Planner → Architect → Senior Dev → Critic APPROVE → done", () => {
+  it("happy path: Planner → Architect → Developer → Critic APPROVE → done", () => {
     const loop = createConsensusLoop();
     loop.submit({ role: "planner", content: "plan v1" });
     expect(loop.state().expectedRole).toBe("architect");
     loop.submit({ role: "architect", content: "sound with one tradeoff" });
-    expect(loop.state().expectedRole).toBe("senior-dev");
-    loop.submit({ role: "senior-dev", content: "feasible; ~2 days" });
+    expect(loop.state().expectedRole).toBe("developer");
+    loop.submit({ role: "developer", content: "feasible; ~2 days" });
     expect(loop.state().expectedRole).toBe("critic");
     const state = loop.submit({ role: "critic", content: "ok", verdict: "approve" });
     expect(state.approved).toBe(true);
@@ -35,14 +35,14 @@ describe("consensus loop (AC-RALPLAN-1..5)", () => {
     const loop = createConsensusLoop();
     loop.submit({ role: "planner", content: "plan v1" });
     loop.submit({ role: "architect", content: "x" });
-    loop.submit({ role: "senior-dev", content: "y" });
+    loop.submit({ role: "developer", content: "y" });
     const afterCritic = loop.submit({ role: "critic", content: "needs work", verdict: "iterate", findings: ["tests unclear"] });
     expect(afterCritic.approved).toBe(false);
     expect(afterCritic.round).toBe(2);
     expect(afterCritic.expectedRole).toBe("planner");
     loop.submit({ role: "planner", content: "plan v2" });
     loop.submit({ role: "architect", content: "x" });
-    loop.submit({ role: "senior-dev", content: "y" });
+    loop.submit({ role: "developer", content: "y" });
     const done = loop.submit({ role: "critic", content: "ok", verdict: "approve" });
     expect(done.approved).toBe(true);
     expect(done.bestPlan).toBe("plan v2");
@@ -53,7 +53,7 @@ describe("consensus loop (AC-RALPLAN-1..5)", () => {
     const loop = createConsensusLoop();
     loop.submit({ role: "planner", content: "p1" });
     loop.submit({ role: "architect", content: "a" });
-    loop.submit({ role: "senior-dev", content: "s" });
+    loop.submit({ role: "developer", content: "s" });
     const s = loop.submit({ role: "critic", content: "no", verdict: "reject" });
     expect(s.round).toBe(2);
     expect(s.expectedRole).toBe("planner");
@@ -64,7 +64,7 @@ describe("consensus loop (AC-RALPLAN-1..5)", () => {
     for (let round = 1; round <= 5; round++) {
       loop.submit({ role: "planner", content: `plan v${round}` });
       loop.submit({ role: "architect", content: "a" });
-      loop.submit({ role: "senior-dev", content: "s" });
+      loop.submit({ role: "developer", content: "s" });
       const s = loop.submit({ role: "critic", content: "nope", verdict: "iterate" });
       if (round < 5) {
         expect(s.round).toBe(round + 1);
@@ -89,7 +89,7 @@ describe("consensus loop (AC-RALPLAN-1..5)", () => {
     const loop = createConsensusLoop();
     loop.submit({ role: "planner", content: "p" });
     loop.submit({ role: "architect", content: "a" });
-    loop.submit({ role: "senior-dev", content: "s" });
+    loop.submit({ role: "developer", content: "s" });
     loop.submit({ role: "critic", content: "ok", verdict: "approve" });
     expect(() => loop.submit({ role: "planner", content: "late" })).toThrow();
   });
@@ -98,7 +98,7 @@ describe("consensus loop (AC-RALPLAN-1..5)", () => {
     const loop = createConsensusLoop();
     loop.submit({ role: "planner", content: "p" });
     loop.submit({ role: "architect", content: "a" });
-    loop.submit({ role: "senior-dev", content: "s" });
+    loop.submit({ role: "developer", content: "s" });
     loop.submit({ role: "critic", content: "c", verdict: "iterate", findings: ["f1", "f2"] });
     const s = loop.state();
     expect(s.verdicts).toHaveLength(1);
@@ -139,6 +139,12 @@ describe("plan output validation (AC-RALPLAN-7)", () => {
       followups: ["benchmark"],
     },
     acceptanceCriteria: ["given X when Y then Z"],
+    filePlan: {
+      structure: "src/ + test/",
+      create: ["src/x.ts", "test/x.test.ts"],
+      modify: [],
+      doNotTouch: [],
+    },
   };
 
   it("accepts a valid RALPLAN-DR summary (3-5 principles, top-3 drivers, ≥2 options)", () => {

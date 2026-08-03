@@ -26,6 +26,12 @@ const PLAN: PlanOutput = {
     "given no args when run then usage text is shown",
     "given 1000 items when listed then all are shown",
   ],
+  filePlan: {
+    structure: "src/ for code, test/ for tests",
+    create: ["src/cli.ts", "test/cli.test.ts"],
+    modify: [],
+    doNotTouch: ["README.md"],
+  },
 };
 
 const APPROVED_PLAN_JSON = JSON.stringify(PLAN);
@@ -53,8 +59,8 @@ function fakePorts(overrides: Partial<OrchestratorPorts> = {}): OrchestratorPort
       asks.push(prompt);
       if (/Planner in a consensus-planning loop/.test(prompt)) return APPROVED_PLAN_JSON;
       if (/Architect/.test(prompt)) return "SOUND — tradeoff considered";
-      if (/Senior Dev/.test(prompt)) return "FEASIBLE";
-      if (/Critic in a consensus-planning loop/.test(prompt)) return "APPROVE";
+      if (/Developer in a consensus-planning loop/.test(prompt)) return "FEASIBLE";
+      if (/final quality gate in a consensus-planning loop/.test(prompt)) return "APPROVE";
       if (/reviewer in a code review/.test(prompt)) return "NIT: style only";
       return "STORY_DONE";
     },
@@ -269,7 +275,7 @@ describe("orchestrator (AC-DOD-1): full pipeline with recorded agents", () => {
         ask(prompt) {
           if (/Planner/.test(prompt)) return APPROVED_PLAN_JSON;
           if (/Architect/.test(prompt)) return "SOUND";
-          if (/Senior Dev/.test(prompt)) return "FEASIBLE";
+          if (/Developer in a consensus-planning loop/.test(prompt)) return "FEASIBLE";
           if (/Critic/.test(prompt)) return "REJECT";
           return "";
         },

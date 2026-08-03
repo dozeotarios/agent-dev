@@ -43,8 +43,8 @@ const ROLE_INSTRUCTIONS: Record<Role, string> = {
     `You are the Architect in a consensus-planning loop. Review the current plan for ` +
     `architectural soundness. Reply with ONE line: "SOUND" or "NEEDS WORK" plus one ` +
     `tradeoff you considered.`,
-  "senior-dev":
-    `You are the Senior Dev in a consensus-planning loop. Review the current plan for ` +
+  "developer":
+    `You are the Developer in a consensus-planning loop. Review the current plan for ` +
     `practical feasibility, idioms, and effort. Reply with ONE line: "FEASIBLE" or ` +
     `"RISKY" plus the main risk.`,
   critic:
@@ -67,6 +67,14 @@ function parsePlan(json: string): PlanOutput | null {
         followups: Array.isArray(j.adr.followups) ? j.adr.followups.map(String) : [],
       },
       acceptanceCriteria: j.acceptanceCriteria.map(String),
+      filePlan: j.filePlan
+        ? {
+            structure: String(j.filePlan.structure ?? ""),
+            create: Array.isArray(j.filePlan.create) ? j.filePlan.create.map(String) : [],
+            modify: Array.isArray(j.filePlan.modify) ? j.filePlan.modify.map(String) : [],
+            doNotTouch: Array.isArray(j.filePlan.doNotTouch) ? j.filePlan.doNotTouch.map(String) : [],
+          }
+        : { structure: "", create: [], modify: [], doNotTouch: [] },
     };
   } catch {
     return null;
@@ -96,7 +104,7 @@ describe.skipIf(!enabled)("agentic eval: ralplan consensus reaches a sound APPRO
   // Agentic evals make real LLM calls (20-35s each, up to 25 calls): the 30s
   // global testTimeout (vitest.config.ts) kills them mid-run. Long timeout.
   it(
-    "full Planner → Architect → Senior Dev → Critic loop with real models",
+    "full Planner → Architect → Developer → Critic loop with real models",
     { timeout: 900_000 },
     () => {
     const deliberate = isHighRisk(GOAL, RISK_SIGNALS);
@@ -124,7 +132,7 @@ describe.skipIf(!enabled)("agentic eval: ralplan consensus reaches a sound APPRO
               (critiques.length > 0
                 ? `\nYour previous critique was:\n${critiques[critiques.length - 1]}\nVerify EVERY point you raised is addressed in the revised plan. APPROVE only if all are addressed and you have no new blocking issues.`
                 : "")
-            : expected === "architect" || expected === "senior-dev"
+            : expected === "architect" || expected === "developer"
               ? `\nCurrent plan: ${planHint(planOutput)}`
               : "";
       let out = ask(ROLE_INSTRUCTIONS[expected] + planHintText);

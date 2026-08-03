@@ -7,35 +7,64 @@
 import type { Role } from "./ralplan";
 import type { ConstraintChecklist } from "./review";
 
+/**
+ * Granular touch-map schema (AC-PLAN-FILES): the plan must say exactly which
+ * files are created, modified, and never touched — with the folder layout.
+ */
+export const FILE_PLAN_SCHEMA = `"filePlan": {
+  "structure": "proposed folder layout for a NEW project, or the existing-layout anchor for an existing repo",
+  "create": ["exact repo-root-relative paths of NEW files"],
+  "modify": ["exact repo-root-relative paths of EXISTING files to change"],
+  "doNotTouch": ["paths that must stay untouched"]
+}`;
+
+/** Planner preamble: inspect the REAL repo layout before anchoring paths. */
+export const FILE_PLAN_INSPECT = `BEFORE emitting: if the repo has code, inspect its real layout (ls/read the tree) and anchor EVERY path in it — the crew builds exactly these files and nothing else. Be granular: files, not vague directories; include tests and configs in the touch map.`;
+
+/** Replaces the planner's old JSON schema in prompts. */
+export const PLANNER_JSON_SCHEMA = `{ "principles": [3-5 strings], "drivers": [exactly 3 strings], "options": [{"name","pros":[...],"cons":[...]} x >=2], "adr": { "decision", "drivers":[...], "alternatives":[...], "why", "consequences":[...], "followups":[...] }, ${FILE_PLAN_SCHEMA}, "acceptanceCriteria": [>=3 testable strings] }`;
+
 export const RALPLAN_ROLE_INSTRUCTIONS: Record<Role, string> = {
   planner:
     `You are the Planner in a consensus-planning loop. ` +
-    `Emit ONLY JSON: { "principles": [3-5 strings], "drivers": [exactly 3 strings], ` +
-    `"options": [{"name","pros":[...],"cons":[...]} x >=2], "adr": { "decision", ` +
-    `"drivers":[...], "alternatives":[...], "why", "consequences":[...], "followups":[...] }, ` +
-    `"acceptanceCriteria": [>=3 testable strings] }. No prose.`,
+    `Emit ONLY JSON: ${PLANNER_JSON_SCHEMA}. No prose. ` +
+    FILE_PLAN_INSPECT,
   architect:
-    `You are the Architect in a consensus-planning loop. Review the current plan for ` +
-    `architectural soundness. Reply with ONE line: "SOUND" or "NEEDS WORK" plus one ` +
-    `tradeoff you considered.`,
-  "senior-dev":
-    `You are the Senior Dev in a consensus-planning loop. Review the current plan for ` +
-    `practical feasibility, idioms, and effort. Reply with ONE line: "FEASIBLE" or ` +
-    `"RISKY" plus the main risk.`,
+    `You are the Architect in a consensus-planning loop (oh-my-claudecode style). ` +
+    `Review the plan for architectural soundness. NEVER rubber-stamp the favored ` +
+    `direction: provide (a) the strongest steelman ANTITHESIS against it, ` +
+    `(b) at least one real TRADEOFF TENSION, (c) a SYNTHESIS when feasible. Reply with ` +
+    `exactly: "SOUND" or "NEEDS WORK" on the first line, then "ANTITHESIS: ...", ` +
+    `"TRADEOFF: ...", "SYNTHESIS: ..." (short lines, concrete, no filler).`,
+  developer:
+    `You are the Developer in a consensus-planning loop. Review the current plan for ` +
+    `PRACTICAL FEASIBILITY, EFFICIENCY, and RELIABILITY: can a developer implement it ` +
+    `as written? Is it the SMALLEST plan that satisfies the criteria (no gold-plating, ` +
+    `no over-engineering, no unnecessary abstractions)? Do the acceptance criteria ` +
+    `cover error handling, edge cases, and failure modes? Reply with exactly: "FEASIBLE" ` +
+    `or "RISKY" on the first line, then "EFFICIENCY: ..." and "RELIABILITY: ..." and the ` +
+    `main risk (short lines, concrete).`,
   critic:
-    `You are the Critic in a consensus-planning loop. The plan must have testable ` +
-    `acceptance criteria and concrete verification. Reply with EXACTLY one of ` +
-    `"APPROVE", "ITERATE", "REJECT" and 1-3 short findings.`,
+    `You are the Critic — the final quality gate in a consensus-planning loop. A false ` +
+    `approval costs 10-100x a false rejection, but a false rejection wastes a round. ` +
+    `Evaluate: testable acceptance criteria, concrete verification, granular filePlan ` +
+    `(exact create/modify paths anchored to the repo; vague paths are BLOCKING), ` +
+    `principle-option consistency, and GAP ANALYSIS — what is MISSING, not just what ` +
+    `is wrong. SELF-AUDIT your findings: drop low-confidence or refutable ones. Every ` +
+    `blocking finding needs a concrete fix. Reply with EXACTLY one of "APPROVE", ` +
+    `"ITERATE", "REJECT" and 1-3 short findings, each with a concrete fix.`,
 };
 
 export const RALPLAN_GOAL_PREFIX = (goal: string): string =>
   `You are the Planner in a consensus-planning loop. Goal: "${goal}". `;
 
-/** Revision hint that feeds the previous critique back to the planner (closed loop). */
-export const RALPLAN_REVISION_HINT = (critique: string): string =>
-  `\nThe previous plan was NOT approved. Critic review (address EVERY point):\n${critique}\nRevise the plan accordingly. Keep the JSON schema identical.`;
+/** Revision hint feeding ALL reviews back to the planner (closed loop, oh-my-claudecode style). */
+export const RALPLAN_REVISION_HINT = (reviews: { role: string; content: string }[]): string =>
+  `\nThe previous plan was NOT approved. Reviews (address EVERY point from ALL roles):\n${reviews
+    .map((r) => `--- ${r.role.toUpperCase()} ---\n${r.content.slice(0, 1200)}`)
+    .join("\n")}\nRevise the plan accordingly. Keep the JSON schema identical.`;
 
-/** Current-plan hint for architect/senior-dev/critic. */
+/** Current-plan hint for architect/developer/critic. */
 export const RALPLAN_PLAN_HINT = (plan: string): string => `\nCurrent plan: ${plan.slice(0, 3000)}`;
 
 /** Critic self-check hint: verify its own previous findings are addressed. */

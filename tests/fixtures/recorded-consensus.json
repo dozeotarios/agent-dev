@@ -4,12 +4,12 @@
     {
       "round": 1,
       "planner": {
-        "content": "{\"principles\":[\"Prefer the simplest technology that satisfies the requirements\",\"Design for testability: business logic separated from HTTP and storage\",\"Make the API contract explicit and stable\",\"Choose boring, well-documented technology\"],\"drivers\":[\"Zero-ops database\",\"Predictable REST semantics\",\"Fast repeatable verification\"],\"options\":[{\"name\":\"SQLite + FastAPI\",\"pros\":[\"Zero external services\",\"Mature boring stack\"],\"cons\":[\"Single-writer concurrency\"]},{\"name\":\"PostgreSQL + FastAPI\",\"pros\":[\"Production-grade concurrency\"],\"cons\":[\"Requires a database service\"]}],\"adr\":{\"decision\":\"SQLite-backed REST API with a single /tasks resource\",\"drivers\":[\"Zero-ops database\",\"Predictable REST semantics\",\"Fast repeatable verification\"],\"alternatives\":[\"PostgreSQL + FastAPI\"],\"why\":\"SQLite satisfies the database requirement with zero operational overhead\",\"consequences\":[\"Single-writer concurrency limit\",\"No built-in auth\"],\"followups\":[\"Define the Task schema and JSON wire format\"]},\"acceptanceCriteria\":[\"A fresh clone runs setup + test and all tests pass\",\"GET /tasks returns the seeded tasks\",\"PATCH /tasks/:id updates fields; invalid ids return 404\"]}"
+        "content": "{\"principles\":[\"Prefer the simplest technology that satisfies the requirements\",\"Design for testability: business logic separated from HTTP and storage\",\"Make the API contract explicit and stable\",\"Choose boring, well-documented technology\"],\"drivers\":[\"Zero-ops database\",\"Predictable REST semantics\",\"Fast repeatable verification\"],\"options\":[{\"name\":\"SQLite + FastAPI\",\"pros\":[\"Zero external services\",\"Mature boring stack\"],\"cons\":[\"Single-writer concurrency\"]},{\"name\":\"PostgreSQL + FastAPI\",\"pros\":[\"Production-grade concurrency\"],\"cons\":[\"Requires a database service\"]}],\"adr\":{\"decision\":\"SQLite-backed REST API with a single /tasks resource\",\"drivers\":[\"Zero-ops database\",\"Predictable REST semantics\",\"Fast repeatable verification\"],\"alternatives\":[\"PostgreSQL + FastAPI\"],\"why\":\"SQLite satisfies the database requirement with zero operational overhead\",\"consequences\":[\"Single-writer concurrency limit\",\"No built-in auth\"],\"followups\":[\"Define the Task schema and JSON wire format\"]},\"filePlan\":{\"structure\":\"src/ (SQLite store) + test/\",\"create\":[\"src/tasks.ts\",\"test/tasks.test.ts\"],\"modify\":[],\"doNotTouch\":[]},\"acceptanceCriteria\":[\"A fresh clone runs setup + test and all tests pass\",\"GET /tasks returns the seeded tasks\",\"PATCH /tasks/:id updates fields; invalid ids return 404\"]}"
       },
       "architect": {
         "content": "SOUND — repository pattern adds a thin YAGNI layer but keeps the Postgres migration path real."
       },
-      "senior-dev": {
+      "developer": {
         "content": "FEASIBLE — SQLite write-lock contention under concurrent writes; mitigate with WAL mode + short transactions."
       },
       "critic": {
@@ -25,7 +25,7 @@
       "architect": {
         "content": "SOUND — SQLite serializes writes but SQLAlchemy keeps the PostgreSQL escape hatch cheap."
       },
-      "senior-dev": {
+      "developer": {
         "content": "FEASIBLE — WAL mode + short transactions mitigate the locking risk."
       },
       "critic": {

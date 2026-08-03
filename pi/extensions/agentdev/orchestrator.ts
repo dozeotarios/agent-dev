@@ -21,6 +21,7 @@ import { detectCodebase } from "./map-codebase";
 import { extractGlossary } from "./define-language";
 import { createInterview, type ConstraintCategory } from "./define-constraints";
 import { createConsensusLoop, isHighRisk, validatePlanOutput, type PlanOutput } from "./ralplan";
+import { PLANNER_JSON_SCHEMA, FILE_PLAN_INSPECT, RALPLAN_REVISION_HINT } from "./agent-prompts";
 import { planToStories, dispatchPlan, completeWorker, type WorkerAssignment } from "./dispatch";
 import { createWorktreePool, pruneStaleLeases, type WorktreeLeases } from "./worktree";
 import { createReviewLoop, constraintsToChecklist, routeToWorkers, LENSES, type Finding } from "./review";
@@ -64,6 +65,8 @@ export interface BuildContext {
   goalText?: string;
   stack?: string | null;
   mode?: string;
+  /** Granular touch map from the plan — workers build exactly this. */
+  filePlan?: import("./ralplan").FilePlan;
 }
 
 export interface ReviewRoundInput {
@@ -355,46 +358,59 @@ export function createOrchestrator(
     }
     const loop = createConsensusLoop();
     let planOutput: PlanOutput | null = null;
-    let lastCritique = "";
+    // per-role review history (closed loop: every role's feedback reaches the
+    // next planner revision AND the critic sees the architect/developer reviews)
     const critiques: string[] = [];
+    const developerReviews: string[] = [];
+    const architectReviews: string[] = [];
     let guard = 0;
     while (loop.state().expectedRole !== null && guard < 25) {
       const role = loop.state().expectedRole;
       if (role === null) break;
+      const planCtx = planOutput ? JSON.stringify(planOutput).slice(0, 1500) : "(none)";
       const goalLine =
-        role === "planner" && !lastCritique
+        role === "planner" && critiques.length === 0
           ? `Goal: "${p.goalText}"${p.stack ? ` (stack: ${p.stack})` : ""}. `
           : "";
       const hint =
-        role === "planner" && lastCritique
-          ? `\nThe previous plan was NOT approved. Critic review (address EVERY point):\n${lastCritique}\nRevise the plan accordingly. Keep the JSON schema identical.`
+        role === "planner" && critiques.length > 0
+          ? RALPLAN_REVISION_HINT([
+              ...(architectReviews.length > 0 ? [{ role: "architect", content: architectReviews[architectReviews.length - 1]! }] : []),
+              ...(developerReviews.length > 0 ? [{ role: "developer", content: developerReviews[developerReviews.length - 1]! }] : []),
+              { role: "critic", content: critiques[critiques.length - 1]! },
+            ])
           : role === "critic" && critiques.length > 0
-            ? `\nCurrent plan: ${planOutput ? JSON.stringify(planOutput).slice(0, 1500) : "(none)"}\nYour previous critique was:\n${critiques[critiques.length - 1]}\nVerify EVERY point you raised is addressed. APPROVE only if all are addressed and no new blocking issues.`
+            ? `\nCurrent plan: ${planCtx}\nArchitect review:\n${architectReviews[architectReviews.length - 1] ?? "(none)"}\nDeveloper review:\n${developerReviews[developerReviews.length - 1] ?? "(none)"}\nYour previous critique was:\n${critiques[critiques.length - 1]}\nVerify EVERY point you raised is addressed. APPROVE only if all are addressed and no new blocking issues.`
             : role !== "planner"
-              ? `\nCurrent plan: ${planOutput ? JSON.stringify(planOutput).slice(0, 1500) : "(none)"}`
+              ? `\nCurrent plan: ${planCtx}`
               : "";
       let out = await ports.ask(
         role === "planner"
-          ? `You are the Planner in a consensus-planning loop. ${goalLine}Emit ONLY JSON: { "principles": [3-5 strings], "drivers": [exactly 3 strings], "options": [{"name","pros":[...],"cons":[...]} x >=2], "adr": { "decision", "drivers":[...], "alternatives":[...], "why", "consequences":[...], "followups":[...] }, "acceptanceCriteria": [>=3 testable strings] }. No prose.${hint}`
+          ? `You are the Planner in a consensus-planning loop. ${goalLine}Emit ONLY JSON: ${PLANNER_JSON_SCHEMA}. No prose. ${FILE_PLAN_INSPECT}${hint}`
           : role === "architect"
-            ? `You are the Architect in a consensus-planning loop. Review the current plan for architectural soundness. Reply with ONE line: "SOUND" or "NEEDS WORK" plus one tradeoff you considered.${hint}`
-            : role === "senior-dev"
-              ? `You are the Senior Dev in a consensus-planning loop. Review the current plan for practical feasibility, idioms, and effort. Reply with ONE line: "FEASIBLE" or "RISKY" plus the main risk.${hint}`
-              : `You are the Critic in a consensus-planning loop. The plan must have testable acceptance criteria and concrete verification. Reply with EXACTLY one of "APPROVE", "ITERATE", "REJECT" and 1-3 short findings.${hint}`,
+            ? `You are the Architect in a consensus-planning loop (oh-my-claudecode style). Review the plan for architectural soundness. NEVER rubber-stamp the favored direction: give the strongest steelman ANTITHESIS, at least one real TRADEOFF TENSION, and a SYNTHESIS when feasible. Reply: "SOUND" or "NEEDS WORK" first line, then ANTITHESIS:/TRADEOFF:/SYNTHESIS: lines (concrete, short).${hint}`
+            : role === "developer"
+              ? `You are the Developer in a consensus-planning loop. Review the plan for PRACTICAL FEASIBILITY, EFFICIENCY (smallest plan that satisfies the criteria — no gold-plating, no over-engineering) and RELIABILITY (error handling, edge cases, failure modes covered). Reply: "FEASIBLE" or "RISKY" first line, then EFFICIENCY:/RELIABILITY:/RISK: lines (concrete, short).${hint}`
+              : `You are the Critic — the final quality gate in a consensus-planning loop. A false approval costs 10-100x a false rejection; a false rejection wastes a round. Evaluate testable criteria, concrete verification, granular filePlan (vague paths are BLOCKING), and GAP ANALYSIS (what is MISSING). SELF-AUDIT: drop low-confidence findings. Concrete fix per blocking finding. Reply with EXACTLY one of "APPROVE", "ITERATE", "REJECT" and 1-3 short findings with fixes.${hint}`,
       );
       if (role === "planner") {
         planOutput = parsePlanOutput(out);
         if (!planOutput) {
           out = await ports.ask(
-            `You are the Planner in a consensus-planning loop. Goal: "${p.goalText}"${p.stack ? ` (stack: ${p.stack})` : ""}. Emit ONLY JSON: { "principles": [3-5 strings], "drivers": [exactly 3 strings], "options": [{"name","pros":[...],"cons":[...]} x >=2], "adr": { "decision", "drivers":[...], "alternatives":[...], "why", "consequences":[...], "followups":[...] }, "acceptanceCriteria": [>=3 testable strings] }. No prose.`,
+            `You are the Planner in a consensus-planning loop. Goal: "${p.goalText}"${p.stack ? ` (stack: ${p.stack})` : ""}. Emit ONLY JSON: ${PLANNER_JSON_SCHEMA}. No prose. ${FILE_PLAN_INSPECT}`,
           );
           planOutput = parsePlanOutput(out);
         }
         loop.submit({ role, content: out });
       } else if (role === "critic") {
-        lastCritique = out;
         critiques.push(out);
         loop.submit({ role, content: out, verdict: criticVerdict(out) });
+      } else if (role === "architect") {
+        architectReviews.push(out);
+        loop.submit({ role, content: out });
+      } else if (role === "developer") {
+        developerReviews.push(out);
+        loop.submit({ role, content: out });
       } else {
         loop.submit({ role, content: out });
       }
@@ -534,8 +550,11 @@ export function createOrchestrator(
       const findings: Finding[] = [];
       for (const lens of LENSES) {
         const ctx = await ports.sliceContext("", lens); // orchestrator-level context
+        const scope = p.plan?.filePlan
+          ? `\n\nTOUCH-PLAN (SCOPE BOUNDARY — binding):\nstructure: ${p.plan.filePlan.structure}\ncreate: ${p.plan.filePlan.create.join(", ")}\nmodify: ${p.plan.filePlan.modify.join(", ")}\ndoNotTouch: ${p.plan.filePlan.doNotTouch.join(", ")}\nAny work touching files outside this map is a BLOCKING scope violation.`
+          : "";
         const out = await ports.ask(
-          `You are the ${lens} reviewer in a code review. Validate the code against this operator-defined checklist:\n${(checklist[lens] ?? []).map((c) => `- ${c}`).join("\n")}\n\nFind BLOCKING issues. Reply with findings, one per line, each starting with exactly "BLOCKING: " or "NIT: ":\n\n${ctx.slice(0, 12_000)}`,
+          `You are the ${lens} reviewer in a code review (agentdev-review). Validate the code against this operator-defined checklist:\n${(checklist[lens] ?? []).map((c) => `- ${c}`).join("\n")}\n\nFind BLOCKING issues. Reply with findings, one per line, each starting with exactly "BLOCKING: " or "NIT: ":\n\n${ctx.slice(0, 12_000)}${scope}`,
         );
         for (const line of out.split("\n")) {
           const t = line.trim();
@@ -744,6 +763,14 @@ function parsePlanOutput(json: string): PlanOutput | null {
         followups: Array.isArray(j.adr.followups) ? j.adr.followups.map(String) : [],
       },
       acceptanceCriteria: Array.isArray(j.acceptanceCriteria) ? j.acceptanceCriteria.map(String) : [],
+      filePlan: j.filePlan
+        ? {
+            structure: String(j.filePlan.structure ?? ""),
+            create: Array.isArray(j.filePlan.create) ? j.filePlan.create.map(String) : [],
+            modify: Array.isArray(j.filePlan.modify) ? j.filePlan.modify.map(String) : [],
+            doNotTouch: Array.isArray(j.filePlan.doNotTouch) ? j.filePlan.doNotTouch.map(String) : [],
+          }
+        : { structure: "", create: [], modify: [], doNotTouch: [] },
     };
   } catch {
     return null;

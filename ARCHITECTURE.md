@@ -100,7 +100,7 @@
   Mode          pick project mode  (no-mistakes / direct-PR / local-only / +yolo)
   ──────────── HANDOFF: enter ralplan ────────────
 ════════════ AUTOPILOT  (runs to commit-ready, no prompts) ════════════
-  Consensus     ralplan: Planner → Architect → Senior Dev → Critic (≤5 → APPROVE)
+  Consensus     ralplan: Planner → Architect → Developer → Critic (≤5 → APPROVE)
                 → approved plan + ADR + testable acceptance criteria
   Dispatch      Leader → one Subleader per plan
   Build         Subleader → Subworkers (develop-tdd, each own worktree)
@@ -145,7 +145,7 @@ The Leader **surfaces tailored candidates** (pre-filled checklist), the operator
 
 ## 8. ralplan consensus (autopilot entry)
 
-Adopts oh-my-claudecode's consensus technique, with **Senior Dev** added.
+Adopts oh-my-claudecode's consensus technique (steelman antithesis + tradeoff tension from the Architect; gap analysis + self-audit from the Critic), with **Developer** added (feasibility + efficiency + reliability).
 
 ```
 Planner (drafts plan + RALPLAN-DR summary)
@@ -153,12 +153,12 @@ Planner (drafts plan + RALPLAN-DR summary)
    ▼
 Architect (soundness: steelman antithesis, ≥1 real tradeoff, synthesis)   ← sequential
    ▼
-Senior Dev (practical feasibility, idioms, effort/sequencing, risk)       ← sequential
+Developer (practical feasibility, efficiency/minimal scope, reliability)  ← sequential
    ▼
 Critic (gate: principle-option consistency, testable criteria, concrete
         verification)  →  APPROVE | ITERATE | REJECT
    │
-   └─ non-APPROVE → revise with Planner → re-run Architect → Senior Dev → Critic
+   └─ non-APPROVE → revise with Planner → re-run Architect → Developer → Critic
       (loop ≤ 5 rounds; if exhausted, present best version)
 ```
 
@@ -166,7 +166,7 @@ Critic (gate: principle-option consistency, testable criteria, concrete
 - **Output:** approved plan + **ADR** (Decision, Drivers, Alternatives, Why, Consequences, Follow-ups) + **testable acceptance criteria**.
 - **Visibility:** a single live **planning pane** streams each pass, the RALPLAN-DR summary, verdicts, and iteration N/5.
 - ⚠️ **Two distinct review loops** — do not conflate:
-  - *Planning-time:* ralplan Architect + Senior Dev + Critic review the **PLAN** (pre-code).
+  - *Planning-time:* ralplan Architect + Developer + Critic review the **PLAN** (pre-code).
   - *Build-time:* the 6-lens roster reviews the **CODE** (post-build, §9).
 
 ---
@@ -177,7 +177,7 @@ Each Subleader runs, per slice, fresh-context reviewers in **herdr panes** (visi
 
 | Lens | Checks |
 |---|---|
-| Senior SWE | correctness, readability, structure, mergeability |
+| Developer  | feasibility, efficiency, reliability, minimal scope |
 | Efficiency | performance & resource cost appropriate to the case |
 | Security Architect | injection, auth, secrets, unsafe deserialization |
 | API/Contract | boundaries, types, cross-layer data-shape consistency |
@@ -325,7 +325,7 @@ agentdev/
     toggle.ts                 # ON/OFF state (session-scoped)
     orchestrator.ts           # Leader dispatch loop, goal → sub-tree
     backend-adapter.ts        # herdr API abstraction (pluggable: tmux/zellij later)
-    ralplan.ts                # consensus loop (Planner→Architect→SeniorDev→Critic)
+    ralplan.ts                # consensus loop (Planner→Architect→Developer→Critic)
     review.ts                 # 6-lens review fan-out + loop
     git-gate.ts               # commit-ready gate, branch/uncommitted tracking, modes
     worktree.ts               # per-Subworker worktree acquire/release (treehouse-pool)
@@ -334,7 +334,7 @@ agentdev/
   pi/skills/
     choose-stack/SKILL.md
     define-constraints/SKILL.md
-    (ralplan prompts: planner/architect/senior-dev/critic)
+    (ralplan prompts: planner/architect/developer/critic)
   tests/
     unit/                     # deterministic logic (mocked herdr) — vitest
     integration/              # real herdr (v0.7.5): pane/workspace/worktree/git

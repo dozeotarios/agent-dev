@@ -74,13 +74,20 @@ Your job is PLANNING (agentdev-plan). Think the goal through, then emit the plan
   "drivers": [exactly 3 strings],
   "options": [ {"name": string, "pros": [strings], "cons": [strings]} x at least 2 ],
   "adr": { "decision": string, "drivers": [strings], "alternatives": [strings], "why": string, "consequences": [strings], "followups": [strings] },
+  "filePlan": {
+    "structure": "proposed folder layout (greenfield) or existing-layout anchor (brownfield)",
+    "create": ["exact repo-root-relative paths of NEW files"],
+    "modify": ["exact repo-root-relative paths of EXISTING files to change"],
+    "doNotTouch": ["paths that must stay untouched"]
+  },
   "acceptanceCriteria": [at least 3 testable strings]
 }
 
 Rules:
+- filePlan is MANDATORY and GRANULAR: if the repo has code, inspect its real layout first (read-only tools allowed: ls/read/grep/find) and anchor every path in it. Files, not vague directories — include tests/configs. Explicitly list what you will NOT touch.
 - acceptanceCriteria must be concrete, testable statements (they become the stories your Subworkers build and verify).
 - Keep the plan tight: countable stories, no gold-plating.
-- ${tools}Do NOT execute anything, do NOT write code — plan only.
+- ${tools}Read-only inspection allowed. Do NOT execute anything, do NOT write code — plan only.
 - Your crew builds and verifies from this JSON; nothing else in your reply is used.`;
 };
 

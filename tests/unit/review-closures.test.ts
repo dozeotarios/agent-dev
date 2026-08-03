@@ -16,7 +16,7 @@ describe("ralplan: best-plan honesty (AC-RALPLAN-5)", () => {
     for (let r = 1; r <= 3; r++) {
       loop.submit({ role: "planner", content: `plan v${r}` });
       loop.submit({ role: "architect", content: "SOUND" });
-      loop.submit({ role: "senior-dev", content: "FEASIBLE" });
+      loop.submit({ role: "developer", content: "FEASIBLE" });
       loop.submit({ role: "critic", content: "REJECT", verdict: "reject" });
     }
     const s = loop.state();
@@ -29,11 +29,11 @@ describe("ralplan: best-plan honesty (AC-RALPLAN-5)", () => {
     const loop = createConsensusLoop(2);
     loop.submit({ role: "planner", content: "plan A" });
     loop.submit({ role: "architect", content: "SOUND" });
-    loop.submit({ role: "senior-dev", content: "FEASIBLE" });
+    loop.submit({ role: "developer", content: "FEASIBLE" });
     loop.submit({ role: "critic", content: "ITERATE 3 findings", verdict: "iterate", findings: ["a", "b", "c"] });
     loop.submit({ role: "planner", content: "plan B" });
     loop.submit({ role: "architect", content: "SOUND" });
-    loop.submit({ role: "senior-dev", content: "FEASIBLE" });
+    loop.submit({ role: "developer", content: "FEASIBLE" });
     loop.submit({ role: "critic", content: "ITERATE 1 finding", verdict: "iterate", findings: ["a"] });
     const s = loop.state();
     expect(s.exhausted).toBe(true);

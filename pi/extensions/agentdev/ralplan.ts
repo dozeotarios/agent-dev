@@ -1,18 +1,18 @@
 /**
  * ralplan — consensus planning engine (ARCHITECTURE.md §8, AC-RALPLAN-1..7).
  *
- * Sequential loop: Planner (draft/revise) → Architect → Senior Dev → Critic.
+ * Sequential loop: Planner (draft/revise) → Architect → Developer → Critic.
  * Critic returns APPROVE | ITERATE | REJECT; any non-APPROVE revises and
  * re-runs the full loop, capped at maxRounds (default 5), after which the best
  * (last) version is yielded. Deliberate mode auto-triggers on high-risk work
  * and requires a 3-scenario pre-mortem + expanded test plan in the output.
  */
 
-export type Role = "planner" | "architect" | "senior-dev" | "critic";
+export type Role = "planner" | "architect" | "developer" | "critic";
 export type Verdict = "approve" | "iterate" | "reject";
 
 export type AgentOutput =
-  | { role: "planner" | "architect" | "senior-dev"; content: string }
+  | { role: "planner" | "architect" | "developer"; content: string }
   | { role: "critic"; content: string; verdict: Verdict; findings?: string[] };
 
 export interface VerdictRecord {
@@ -43,7 +43,7 @@ export interface ConsensusLoop {
   submit(output: AgentOutput): ConsensusState;
 }
 
-const ROLE_ORDER: Role[] = ["planner", "architect", "senior-dev", "critic"];
+const ROLE_ORDER: Role[] = ["planner", "architect", "developer", "critic"];
 
 export function createConsensusLoop(maxRounds = 5): ConsensusLoop {
   let round = 1;
@@ -80,8 +80,8 @@ export function createConsensusLoop(maxRounds = 5): ConsensusLoop {
         versions.push({ round, content: output.content, verdict: null, findings: [] });
         expectedRole = "architect";
       } else if (output.role === "architect") {
-        expectedRole = "senior-dev";
-      } else if (output.role === "senior-dev") {
+        expectedRole = "developer";
+      } else if (output.role === "developer") {
         expectedRole = "critic";
       } else if (output.role === "critic") {
         verdicts.push({ round, verdict: output.verdict, findings: output.findings ?? [] });
@@ -172,6 +172,22 @@ export interface RalplanDrSummary {
   options: { name: string; pros: string[]; cons: string[] }[];
 }
 
+/**
+ * Granular touch map: exactly where the crew writes/modifies, and what it
+ * must NOT touch. Every path is repo-root-relative and concrete (files, not
+ * vague directories) — the workers build precisely this and nothing else.
+ */
+export interface FilePlan {
+  /** Proposed folder layout (greenfield) or the existing-layout anchor (brownfield). */
+  structure: string;
+  /** Exact NEW files to create (repo-root-relative paths). */
+  create: string[];
+  /** Exact EXISTING files to modify (repo-root-relative paths). */
+  modify: string[];
+  /** Files/dirs that must stay untouched. */
+  doNotTouch: string[];
+}
+
 export interface PlanOutput {
   adr: {
     decision: string;
@@ -182,6 +198,8 @@ export interface PlanOutput {
     followups: string[];
   };
   acceptanceCriteria: string[];
+  /** Granular touch map (AC-PLAN-FILES): what to write/modify/never touch. */
+  filePlan: FilePlan;
   preMortem?: string[];
   testPlan?: string[];
 }
@@ -228,6 +246,22 @@ export function validatePlanOutput(
   if (adr.followups.length === 0) errors.push("ADR missing follow-ups");
   if (output.acceptanceCriteria.length === 0) {
     errors.push("acceptance criteria must be testable and non-empty");
+  }
+  // Granular touch map (AC-PLAN-FILES): the plan must say exactly where
+  // everything is written or modified — and what it will not touch.
+  const fp = output.filePlan;
+  if (!fp) {
+    errors.push("filePlan missing (exact create/modify paths required)");
+  } else {
+    if (!fp.structure?.trim()) errors.push("filePlan missing structure (folder layout)");
+    if ((fp.create?.length ?? 0) + (fp.modify?.length ?? 0) === 0) {
+      errors.push("filePlan must list at least one create or modify path");
+    }
+    for (const list of [fp.create, fp.modify, fp.doNotTouch]) {
+      for (const p of list ?? []) {
+        if (!p.trim()) errors.push("filePlan paths must be non-empty");
+      }
+    }
   }
   if (opts.deliberate) {
     if (!output.preMortem || output.preMortem.length < 3) {

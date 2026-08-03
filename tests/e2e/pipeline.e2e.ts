@@ -44,6 +44,12 @@ const FIXTURE_PLAN: PlanOutput = {
     consequences: ["node runtime dependency"],
     followups: ["benchmark startup time"],
   },
+  filePlan: {
+    structure: "src/ + test/",
+    create: ["src/feature.ts", "test/feature.test.ts"],
+    modify: [],
+    doNotTouch: ["README.md"],
+  },
   acceptanceCriteria: [
     "given 'todo add x' when run then the item is stored",
     "given no args when run then usage text is shown",
@@ -55,8 +61,8 @@ const FIXTURE_PLAN: PlanOutput = {
 function recordedAsk(prompt: string): string {
   if (/Planner in a consensus-planning loop/.test(prompt)) return JSON.stringify(FIXTURE_PLAN);
   if (/Architect in a consensus-planning loop/.test(prompt)) return "SOUND — tradeoff considered";
-  if (/Senior Dev in a consensus-planning loop/.test(prompt)) return "FEASIBLE";
-  if (/Critic in a consensus-planning loop/.test(prompt)) return "APPROVE";
+  if (/Developer in a consensus-planning loop/.test(prompt)) return "FEASIBLE";
+  if (/final quality gate in a consensus-planning loop/.test(prompt)) return "APPROVE";
   if (/reviewer in a code review/.test(prompt)) return "NIT: style only";
   return "STORY_DONE";
 }

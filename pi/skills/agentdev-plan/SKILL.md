@@ -18,6 +18,12 @@ else in your reply is used.
    versions, API changes, modern idioms, best practices for the domain.
    Bounded: at most 3 searches; skip if the domain is stable. Fold findings
    into principles/options/ADR (no citation list needed).
+3. **filePlan — GRANULAR touch map (binding):** inspect the real repo layout
+   (read-only tools) and emit exact repo-root-relative paths:
+   `create` (new files), `modify` (existing files), `doNotTouch`
+   (untouchables), plus the folder `structure`. Files, not directories —
+   include tests and configs. The crew builds exactly this and nothing else;
+   reviewers enforce it as a scope boundary.
 3. Think the goal through — architecture, slice boundaries, verification.
 4. Emit ONE JSON object inside a single ```json code block — no prose
    outside it:
