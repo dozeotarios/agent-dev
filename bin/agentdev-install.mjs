@@ -44,7 +44,15 @@ function compareSemver(a, b) {
 function herdrVersion() {
   const r = run("herdr", ["--version"]);
   if (r.status !== 0) return null;
-  return (r.stdout.match(/\d+\.\d+\.\d+/) ?? [null])[0];
+  // RAW version string (e.g. "0.7.5-preview.2026-07-29-44b3adb12552"): the
+  // suffix matters — a preview binary is protocol-incompatible with the
+  // stable server even when the semver matches.
+  return r.stdout.trim().replace(/^herdr\s*/, "") || null;
+}
+
+/** Numeric semver ("0.7.5") used for the supported-range gate. */
+function herdrSemver(v) {
+  return (String(v).match(/\d+\.\d+\.\d+/) ?? [null])[0];
 }
 
 function piPresent() {
@@ -56,12 +64,21 @@ function herdrServerRunning() {
   return r.status === 0 && /status:\s*running/.test(r.stdout);
 }
 
+/** Version string of the RUNNING server (vs the installed binary). */
+function herdrServerVersion() {
+  const r = run("herdr", ["status", "server"], { timeout: 10_000 });
+  // compact output: "status: running\nversion: 0.7.5-preview...\n"
+  const m = r.stdout.match(/version:\s*(\S+)/);
+  return m ? m[1] : null;
+}
+
 // ---- ensures (install ONLY what's missing; verify what's there) ----
 
 export function ensureHerdr(checkOnly = false) {
   const v = herdrVersion();
   if (v !== null) {
-    if (compareSemver(v, MIN_HERDR) < 0 || compareSemver(v, MAX_HERDR) >= 0) {
+    const s = herdrSemver(v);
+    if (compareSemver(s, MIN_HERDR) < 0 || compareSemver(s, MAX_HERDR) >= 0) {
       console.error(
         `ERROR: herdr ${v} is outside the supported range [${MIN_HERDR}, ${MAX_HERDR}). ` +
           `Update herdr (herdr update) and re-run.`,
@@ -95,8 +112,25 @@ export function ensureHerdr(checkOnly = false) {
 
 export function ensureHerdrServer(checkOnly = false) {
   if (herdrServerRunning()) {
-    console.log("herdr server: running ✓");
-    return { running: true };
+    const installed = herdrVersion(); // installed binary
+    const running = herdrServerVersion(); // live server
+    // Stale server: after `herdr update` the running server is still the old
+    // binary, and a mismatched client/server (protocol drift) cannot talk.
+    // Restart it so launch always lands on the installed version.
+    if (installed && running && installed !== running) {
+      console.log(
+        `herdr server: running OLD version (server ${running} vs installed ${installed}) — restarting...`,
+      );
+      if (checkOnly) return { running: false, stale: true };
+      const stop = run("herdr", ["server", "stop"], { timeout: 30_000 });
+      if (stop.status !== 0) {
+        console.error(`WARNING: could not stop the stale herdr server (${(stop.stderr ?? "").slice(0, 200)}) — continuing`);
+      }
+      // fall through to the start path below
+    } else {
+      console.log("herdr server: running ✓");
+      return { running: true };
+    }
   }
   if (checkOnly) {
     console.log("herdr server: STOPPED (launch will start it headless)");
