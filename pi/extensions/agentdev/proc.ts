@@ -26,11 +26,34 @@ export interface ProcError extends Error {
   timedOut: boolean;
 }
 
+const sleepMs = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
 /**
  * Spawn a process and collect stdout/stderr without blocking. Kills with
  * SIGTERM at timeoutMs, escalating to SIGKILL shortly after.
+ * Rate-limit (HTTP 429 / usage-limit) outputs are retried with exponential
+ * backoff — provider quotas are transient, crew goals are not.
  */
-export function spawnCollect(
+export async function spawnCollect(
+  cmd: string,
+  args: string[],
+  opts: { cwd?: string; timeoutMs: number; env?: Record<string, string>; retries?: number },
+): Promise<ProcResult> {
+  const retries = opts.retries ?? 3;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await spawnOnce(cmd, args, opts);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const limited = /429|usage limit|rate limit|quota/i.test(msg);
+      if (!limited || attempt > retries) throw e;
+      const waitMs = Math.min(30_000, 2_000 * 2 ** (attempt - 1));
+      await sleepMs(waitMs);
+    }
+  }
+}
+
+function spawnOnce(
   cmd: string,
   args: string[],
   opts: { cwd?: string; timeoutMs: number; env?: Record<string, string> },
