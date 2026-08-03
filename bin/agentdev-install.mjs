@@ -318,22 +318,69 @@ function saveLauncherState(state) {
   writeFileSync(file, JSON.stringify(state, null, 2), { mode: 0o600 });
 }
 
+/** Is a workspace still alive in the live herdr server? */
+function workspaceAlive(workspaceId) {
+  const r = run("herdr", ["pane", "list"], { timeout: 15_000 });
+  if (r.status !== 0) return false;
+  try {
+    const panes = JSON.parse(r.stdout).result?.panes ?? [];
+    return panes.some((p) => p.workspace_id === workspaceId);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Scan the LIVE server for an agentdev workspace whose root pane cwd matches
+ * (self-healing: survives stale launcher state, server restarts, and session
+ * restore re-ids). Never creates duplicates.
+ */
+function findWorkspaceByCwd(cwd) {
+  const wsr = run("herdr", ["workspace", "list"], { timeout: 15_000 });
+  const pr = run("herdr", ["pane", "list"], { timeout: 15_000 });
+  if (wsr.status !== 0 || pr.status !== 0) return null;
+  try {
+    const workspaces = JSON.parse(wsr.stdout).result?.workspaces ?? [];
+    const panes = JSON.parse(pr.stdout).result?.panes ?? [];
+    const agentdevWs = new Set(
+      workspaces.filter((w) => /^agentdev/.test(w.label ?? "")).map((w) => w.workspace_id),
+    );
+    for (const p of panes) {
+      if (agentdevWs.has(p.workspace_id) && p.cwd === cwd) {
+        return { workspaceId: p.workspace_id, paneId: p.pane_id };
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
+/** Is an agent (pi) already running in the pane? (No double-start.) */
+function piRunningInPane(paneId) {
+  const r = run("herdr", ["pane", "get", paneId], { timeout: 15_000 });
+  if (r.status !== 0) return false;
+  try {
+    const pane = JSON.parse(r.stdout).result?.pane ?? null;
+    return (pane?.agent_status ?? "unknown") !== "unknown";
+  } catch {
+    return false;
+  }
+}
+
 /** Find or create the agentdev workspace for this cwd; returns {workspaceId, paneId}. */
 function ensureAgentdevWorkspace(cwd) {
   const state = loadLauncherState();
   const existing = state[cwd];
-  if (existing) {
-    const r = run("herdr", ["pane", "list"], { timeout: 15_000 });
-    if (r.status === 0) {
-      try {
-        const panes = JSON.parse(r.stdout).result?.panes ?? [];
-        if (panes.some((p) => p.workspace_id === existing.workspaceId)) {
-          return existing; // still alive — reattach
-        }
-      } catch {
-        /* fall through to recreate */
-      }
-    }
+  if (existing && workspaceAlive(existing.workspaceId)) {
+    return existing; // still alive — reattach (no new session)
+  }
+  const found = findWorkspaceByCwd(cwd);
+  if (found) {
+    state[cwd] = found;
+    saveLauncherState(state);
+    console.log(`agentdev workspace: reattached (${found.workspaceId})`);
+    return found;
   }
   const r = run("herdr", ["workspace", "create", "--cwd", cwd, "--label", "agentdev"]);
   if (r.status !== 0) throw new Error(`workspace create failed: ${(r.stderr ?? "").slice(0, 200)}`);
@@ -353,13 +400,18 @@ function shellQuote(arg) {
 function launchHerdrHosted(piArgs) {
   const ws = ensureAgentdevWorkspace(process.cwd());
   const crewOn = readToggleState(process.cwd()); // OFF by default; restores last state
-  const envPrefix = crewOn ? "AGENTDEV_AUTO_ON=1" : null;
-  const piCmd = [envPrefix, "pi", ...piArgs.map(shellQuote)].filter(Boolean).join(" ");
-  const r = run("herdr", ["pane", "run", ws.paneId, piCmd], { timeout: 30_000 });
-  if (r.status !== 0) throw new Error(`starting pi in the pane failed: ${(r.stderr ?? "").slice(0, 200)}`);
-  console.log(crewOn
-    ? "pi started inside the herdr workspace, crew ON (restored from last session)."
-    : "pi started inside the herdr workspace, crew OFF (type /agentdev on to enable).");
+  if (piRunningInPane(ws.paneId)) {
+    // the pi session is already live in the pane — attach, never double-start
+    console.log(`pi already running in ${ws.workspaceId} — attaching (crew ${crewOn ? "ON" : "OFF"}).`);
+  } else {
+    const envPrefix = crewOn ? "AGENTDEV_AUTO_ON=1" : null;
+    const piCmd = [envPrefix, "pi", ...piArgs.map(shellQuote)].filter(Boolean).join(" ");
+    const r = run("herdr", ["pane", "run", ws.paneId, piCmd], { timeout: 30_000 });
+    if (r.status !== 0) throw new Error(`starting pi in the pane failed: ${(r.stderr ?? "").slice(0, 200)}`);
+    console.log(crewOn
+      ? "pi started inside the herdr workspace, crew ON (restored from last session)."
+      : "pi started inside the herdr workspace, crew OFF (type /agentdev on to enable).");
+  }
   console.log("Opening herdr — click the 'agentdev' pane to interact with pi;");
   console.log("crew panes (L/S/W/R) appear alongside as goals start.");
   const tui = spawnSync("herdr", [], { stdio: "inherit", timeout: 0 });
