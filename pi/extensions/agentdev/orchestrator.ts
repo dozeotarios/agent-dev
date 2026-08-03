@@ -33,6 +33,7 @@ import { createFleet, type Fleet, type FleetNode } from "./fleet";
 import { roleLabel } from "./roles";
 import { saveFleet, loadFleet, reconcileFleet } from "./state";
 import type { VerifyResult } from "./verify-work";
+import type { CrewWorker, CrewOutcome } from "./crew";
 import { collectGitState, parseBranch, parsePorcelain, type WorktreeGitState } from "./git-state";
 import { requiresConfirm, type ProjectMode } from "./modes";
 import type { ReviewConstraints } from "./review";
@@ -59,6 +60,10 @@ export interface BuildContext {
   storyId: string;
   worktree: string;
   criteria: string[];
+  /** Brief context (crew briefs embed them; absent in legacy callers). */
+  goalText?: string;
+  stack?: string | null;
+  mode?: string;
 }
 
 export interface ReviewRoundInput {
@@ -73,6 +78,22 @@ export interface OrchestratorPorts {
   /** Real: `pi -p`; tests: recorded transcripts. May be async (real ports) so
    *  the pi session stays interactive while the crew runs. */
   ask(prompt: string, timeoutMs?: number): string | Promise<string>;
+  /**
+   * CREW PORTS (firstmate-style spawning): Subleader + Subworkers are real
+   * herdr panes hosting live pi sessions, briefed from disk/chat and
+   * supervised by report files + herdr agent state.
+   */
+  spawnWorker(ctx: BuildContext): CrewWorker | Promise<CrewWorker>;
+  waitForWorker(w: CrewWorker, opts?: { timeoutMs?: number }): CrewOutcome | Promise<CrewOutcome>;
+  /** keepOpen=true leaves the pane up for inspection (fail-closed teardown). */
+  teardownWorker(w: CrewWorker, keepOpen?: boolean): void | Promise<void>;
+  spawnSubleader(input: {
+    goalId: string;
+    goalText: string;
+    plan: string;
+    workers: string[];
+  }): CrewWorker | Promise<CrewWorker>;
+  sendToSubleader(w: CrewWorker, text: string): void | Promise<void>;
   /** Real: pi Subworker agent in the worktree; tests: recorded/fixture. */
   buildStory(ctx: BuildContext): void | Promise<void>;
   /** Real: `npm test` in the worktree; tests: fake. */
@@ -175,6 +196,8 @@ export function createOrchestrator(
   const gitRunner = opts.git;
   const tracker = createEscalationTracker(createEscalationPolicy({ maxRetries: 3, maxReviewRounds: 5 }));
   const runs = new Map<string, GoalRun>();
+  /** Live Subleader workers (for report delivery on resume-less runs). */
+  const subleaders = new Map<string, CrewWorker>();
   /** Goals started this session (live leader turns can hand plans to them). */
   const liveGoals = new Set<string>();
   /** Leader handoff payload: plan + researched stack (AC-LEADER-1). */
@@ -420,6 +443,25 @@ export function createOrchestrator(
       for (const w of result.workers) {
         f.addNode({ id: w.storyId, role: "subworker", path: `${p.goalId}/plan/${w.storyId}`, status: "working", paneId: null });
       }
+      // SPAWN THE SUBLEADER (firstmate-style): a real pane hosting the plan.
+      try {
+        const sub = await ports.spawnSubleader({
+          goalId: p.goalId,
+          goalText: p.goalText,
+          plan: p.plan ? JSON.stringify(p.plan, null, 2) : "(none)",
+          workers: result.workers.map((w, i) => {
+            const lease = leases.used[i] ?? "?";
+            return `${w.storyId} → worktree ${lease}`;
+          }),
+        });
+        subleaders.set(p.goalId, sub);
+        f.setPaneId(`${p.goalId}:subleader`, sub.paneId);
+      } catch (e) {
+        ports.notify(
+          `agentdev: subleader spawn failed (${e instanceof Error ? e.message : String(e)}) — running without pane`,
+          "warning",
+        );
+      }
     }
     persist(p, f.nodes());
     p.step = "build";
@@ -434,13 +476,40 @@ export function createOrchestrator(
       let attempt = 1;
       // self-heal flaky builds, escalate after budget (AC-ESCAL-1/2)
       for (;;) {
-        await ports.buildStory({ goalId: p.goalId, storyId: w.storyId, worktree: w.worktreePath, criteria: p.storyCriteria[w.storyId] ?? [] });
+        const worker = await ports.spawnWorker({
+          goalId: p.goalId,
+          storyId: w.storyId,
+          worktree: w.worktreePath,
+          criteria: p.storyCriteria[w.storyId] ?? [],
+          goalText: p.goalText,
+          stack: p.stack,
+          mode: p.mode,
+        });
+        try {
+          f.setPaneId(w.storyId, worker.paneId); // fleet node id == storyId
+        } catch {
+          /* node may not exist in resumed runs */
+        }
+        // supervise to the report contract (non-blocking polls)
+        const outcome = await ports.waitForWorker(worker);
+        if (outcome !== "done") {
+          ports.notify(
+            `agentdev: ${w.storyId} worker ${outcome} — pane left open for inspection`,
+            "warning",
+          );
+          throw new Error(`subworker ${w.storyId} ${outcome}`);
+        }
         const v: VerifyResult = await ports.verifyStory(w.worktreePath);
-        if (v.ok) break;
+        if (v.ok) {
+          await ports.teardownWorker(worker); // green → close the pane
+          break;
+        }
+        // verify failed → keep the pane open, spawn a fresh worker for retry
+        await ports.teardownWorker(worker, true);
         const d = tracker.handle({ branchId: w.storyId, kind: "build-failure", attempt });
         if (!d.escalate) {
           attempt += 1;
-          ports.notify(`agentdev: ${w.storyId} build failed — retry ${attempt - 1}/${3}`, "warning");
+          ports.notify(`agentdev: ${w.storyId} verify failed — retry ${attempt - 1}/${3}`, "warning");
           continue;
         }
         throw new Error(`build failed for ${w.storyId} (retries exhausted): ${v.output.slice(0, 300)}`);
@@ -483,11 +552,19 @@ export function createOrchestrator(
     }
     if (!loop.isComplete()) throw new Error("review loop did not terminate");
     // Subleader → Leader report (AC-LEADER-2): a factual brief of what the
-    // crew built and verified, surfaced in the interactive session.
+    // crew built and verified, surfaced in the interactive session AND sent
+    // into the Subleader's pane (visible hierarchy).
     const workers = loadWorkers(cwd, p);
-    ports.notify(
-      `agentdev: SUBLEADER REPORT (${p.goalId}) — ${workers.length} story${workers.length === 1 ? "" : "s"} built & verified; review clean after ${round - 1} round${round - 1 === 1 ? "" : "s"}; commit-ready at the gate — /agentdev confirm ${p.goalId}`,
-    );
+    const report = `SUBLEADER REPORT (${p.goalId}) — ${workers.length} story${workers.length === 1 ? "" : "s"} built & verified; review clean after ${round - 1} round${round - 1 === 1 ? "" : "s"}; commit-ready at the gate — /agentdev confirm ${p.goalId}`;
+    ports.notify(`agentdev: ${report}`);
+    const sub = subleaders.get(p.goalId);
+    if (sub) {
+      try {
+        await ports.sendToSubleader(sub, report);
+      } catch {
+        /* pane closed — report already surfaced in the session */
+      }
+    }
     p.step = "gate";
     persist(p);
   }

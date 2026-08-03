@@ -12,6 +12,15 @@
  */
 
 import { spawnCollect, execCollect } from "./proc";
+import {
+  spawnWorker as crewSpawnWorker,
+  waitForWorker as crewWaitForWorker,
+  teardownWorker as crewTeardownWorker,
+  spawnSubleader as crewSpawnSubleader,
+  parseWorkerReport,
+  readWorkerReport,
+  type CrewWorker,
+} from "./crew";
 import { builderPrompt, frameUntrusted } from "./agent-prompts";
 import { verifyWork } from "./verify-work";
 import { generateCandidates, createInterview, CATEGORY_ORDER, type ConstraintCategory } from "./define-constraints";
@@ -62,29 +71,38 @@ export function createRealPorts(opts: RealPortsOptions): OrchestratorPorts {
   const ui = opts.ui;
   const piBin = opts.piBin ?? "pi";
 
-  return {
+  const ports: OrchestratorPorts = {
     adapter: undefined as never, // filled by the extension (single herdr touchpoint)
     async ask(prompt, timeoutMs) {
       return askPi(prompt, timeoutMs ?? 300_000, piBin);
     },
     async buildStory(ctx) {
-      const prompt = builderPrompt(ctx.goalId, ctx.storyId, ctx.criteria);
-      let out: string;
-      try {
-        const r = await spawnCollect(piBin, ["-p", frameUntrusted(prompt)], {
-          cwd: ctx.worktree,
-          timeoutMs: 600_000,
-        });
-        out = r.stdout.trim();
-      } catch (e) {
-        const err = e as { code?: number | null; stderr?: string; message?: string; timedOut?: boolean };
-        throw new Error(
-          `subworker agent failed (${err.code ?? "?"}${err.timedOut ? ", timed out" : ""}): ${(err.stderr ?? err.message ?? "").slice(0, 300)}`,
-        );
+      // CREW-BACKED (firstmate-style): spawn a real worker pane, supervise it
+      // to its report, teardown when green. Failures keep their pane open.
+      const worker = crewSpawnWorker(ports.adapter, ctx, { cwd: process.cwd() });
+      const outcome = await crewWaitForWorker(ports.adapter, worker);
+      if (outcome === "done") {
+        crewTeardownWorker(ports.adapter, worker);
+        return;
       }
-      if (/STORY_BLOCKED/.test(out)) {
-        throw new Error(`subworker blocked: ${out.slice(0, 300)}`);
-      }
+      const summary = readWorkerReport(worker.reportPath);
+      crewTeardownWorker(ports.adapter, worker, true); // keep open for inspection
+      throw new Error(`subworker ${outcome}: ${summary.slice(0, 300)}`);
+    },
+    async spawnWorker(ctx) {
+      return crewSpawnWorker(ports.adapter, ctx, { cwd: process.cwd() });
+    },
+    async waitForWorker(w, opts) {
+      return crewWaitForWorker(ports.adapter, w, opts?.timeoutMs);
+    },
+    async teardownWorker(w, keepOpen) {
+      crewTeardownWorker(ports.adapter, w, keepOpen);
+    },
+    async spawnSubleader(input) {
+      return crewSpawnSubleader(ports.adapter, input);
+    },
+    async sendToSubleader(w, text) {
+      ports.adapter.agentPrompt(w.name, text);
     },
     verifyStory(worktree) {
       return verifyWork(worktree);
@@ -148,4 +166,5 @@ export function createRealPorts(opts: RealPortsOptions): OrchestratorPorts {
       ui.notify(message, level ?? "info");
     },
   };
+  return ports;
 }

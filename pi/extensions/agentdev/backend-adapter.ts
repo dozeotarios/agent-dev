@@ -90,6 +90,10 @@ export interface BackendAdapter {
   paneGet(paneId: string): PaneInfo;
   paneList(): { paneId: string; workspaceId: string; agentStatus?: string }[];
   agentWait(paneId: string, opts: WaitOptions): boolean;
+  /** Start a supported interactive agent (pi) in an existing pane. */
+  agentStart(name: string, kind: string, paneId: string): void;
+  /** Submit a prompt to a live agent pane (fire-and-forget; poll agent state). */
+  agentPrompt(paneId: string, text: string): void;
   paneClose(paneId: string): void;
   workspaceClose(workspaceId: string): void;
 }
@@ -359,6 +363,14 @@ export function createHerdrAdapter(
         if (e instanceof HerdrError && e.code === "agent_not_found") return false;
         throw e;
       }
+    },
+
+    agentStart(name: string, kind: string, paneId: string): void {
+      parseRpc(run(["agent", "start", name, "--kind", kind, "--pane", paneId]), "agent start");
+    },
+
+    agentPrompt(paneId: string, text: string): void {
+      parseRpc(run(["agent", "prompt", paneId, text]), "agent prompt");
     },
 
     paneClose(paneId: string): void {

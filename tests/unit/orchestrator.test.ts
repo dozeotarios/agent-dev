@@ -32,10 +32,22 @@ const APPROVED_PLAN_JSON = JSON.stringify(PLAN);
 
 function fakePorts(overrides: Partial<OrchestratorPorts> = {}): OrchestratorPorts {
   const asks: string[] = [];
+  const fakeWorker = (ctx: { goalId: string; storyId: string; worktree: string }) => ({
+    goalId: ctx.goalId,
+    storyId: ctx.storyId,
+    worktree: ctx.worktree,
+    paneId: "fake-pane",
+    workspaceId: "fake-ws",
+    name: `worker-${ctx.storyId}`,
+    reportPath: join(tmpdir(), `agentdev-fake-report-${ctx.storyId}.md`),
+  });
   return {
     adapter: {
       paneList: () => [],
       paneClose: () => undefined,
+      workspaceClose: () => undefined,
+      agentPrompt: () => undefined,
+      agentStart: () => undefined,
     } as unknown as OrchestratorPorts["adapter"],
     ask(prompt) {
       asks.push(prompt);
@@ -49,6 +61,19 @@ function fakePorts(overrides: Partial<OrchestratorPorts> = {}): OrchestratorPort
     buildStory() {
       /* recorded agent: no-op */
     },
+    spawnWorker: (ctx) => fakeWorker(ctx),
+    waitForWorker: () => "done",
+    teardownWorker: () => undefined,
+    spawnSubleader: (input) => ({
+      goalId: input.goalId,
+      storyId: "plan",
+      worktree: tmpdir(),
+      paneId: "fake-sub-pane",
+      workspaceId: "fake-sub-ws",
+      name: `subleader-${input.goalId}`,
+      reportPath: "",
+    }),
+    sendToSubleader: () => undefined,
     verifyStory: () => ({ ok: true, output: "ok", command: "npm test" }),
     sliceContext: () => "// fixture code context",
     confirmCommit: () => true,

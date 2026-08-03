@@ -34,6 +34,8 @@ export interface FleetNode {
 export interface Fleet {
   addNode(node: FleetNode): FleetNode;
   setStatus(id: string, status: NodeStatus): void;
+  /** Record the real herdr pane backing a role node (crew spawns). */
+  setPaneId(id: string, paneId: string): void;
   node(id: string): FleetNode | undefined;
   nodes(): FleetNode[];
   /** Remove a node (autoclose/dismiss); unknown id is a no-op. */
@@ -95,6 +97,11 @@ export function createFleet(): Fleet {
       const node = nodes.get(id);
       if (!node) throw new Error(`unknown fleet node: ${id}`);
       node.status = status;
+    },
+    setPaneId(id, paneId) {
+      const node = nodes.get(id);
+      if (!node) throw new Error(`unknown fleet node: ${id}`);
+      node.paneId = paneId;
     },
     node: (id) => {
       const n = nodes.get(id);
