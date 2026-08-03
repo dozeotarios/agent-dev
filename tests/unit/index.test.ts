@@ -6,7 +6,7 @@ interface CommandDef {
   handler: (args?: string, ctx?: unknown) => Promise<void> | void;
 }
 
-type HookHandler = (event: { prompt: string }) => unknown;
+type HookHandler = (event: { prompt: string }, ctx?: unknown) => unknown;
 
 function tmpCwd(): string {
   const { mkdtempSync } = require("node:fs") as typeof import("node:fs");
@@ -51,7 +51,14 @@ function loadExtension(cwd?: string) {
     cwd: cwd ?? tmpCwd(),
   });
   ext.register(pi as never);
-  const ctx = { ui: { notify } };
+  const ctx = {
+    ui: {
+      notify,
+      select: vi.fn().mockResolvedValue(undefined), // timeout → defaults
+      input: vi.fn().mockResolvedValue(undefined),
+      confirm: vi.fn().mockResolvedValue(false),
+    },
+  };
   return { commands, hooks, tools, notify, ctx, ext, started, leaderPlans };
 }
 
@@ -108,15 +115,35 @@ describe("extension entry — index.ts (wiring)", () => {
     expect(hooks.has("before_agent_start")).toBe(true);
   });
 
-  it("the interactive turn is the LEADER planning turn (AC-LEADER-1)", () => {
+  it("the interactive turn is the LEADER planning turn (AC-LEADER-1)", async () => {
     const { hooks, ctx, commands, ext } = loadExtension();
     void commands.get("agentdev")!.handler("on", ctx);
     expect(ext.toggle.isOn()).toBe(true);
-    const result = hooks.get("before_agent_start")!({ prompt: "build a todo app" }) as {
+    const result = (await hooks.get("before_agent_start")!({ prompt: "build a todo app" }, ctx)) as {
       systemPrompt: string;
     };
     expect(result.systemPrompt).toContain("You are the Leader");
     expect(result.systemPrompt).toContain("acceptanceCriteria");
+    expect(result.systemPrompt).toContain("agentdev-plan");
+  });
+
+  it("the manual interview asks the operator (stack + constraints + mode + research)", async () => {
+    const { hooks, ctx, commands } = loadExtension();
+    await commands.get("agentdev")!.handler("on", ctx);
+    await hooks.get("before_agent_start")!({ prompt: "build a todo app" }, ctx);
+    const titles = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(titles).toContain("Choose a stack"); // greenfield → the operator picks
+    expect(titles.some((t) => t.startsWith("define-constraints:"))).toBe(true);
+    expect(titles).toContain("Project mode");
+    expect(titles.some((t) => t.includes("Research up-to-date techniques"))).toBe(true);
+  });
+
+  it("interview timeouts fall back to defaults (unattended run)", async () => {
+    const { hooks, ctx, commands, started } = loadExtension();
+    await commands.get("agentdev")!.handler("on", ctx);
+    await hooks.get("before_agent_start")!({ prompt: "build a todo app" }, ctx);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(started).toContain("build a todo app"); // pipeline still runs
   });
 
   it("agent_end captures the leader's plan and hands it to the crew", async () => {
@@ -160,7 +187,7 @@ describe("extension entry — index.ts (wiring)", () => {
     const { hooks } = loadExtension();
     expect(hooks.has("resources_discover")).toBe(true);
     const skills = hooks.get("resources_discover")!({ prompt: "" }) as { skillPaths: string[] };
-    expect(skills.skillPaths.some((p) => p.includes("define-language"))).toBe(true);
+    expect(skills.skillPaths.some((p) => p.includes("agentdev-define-language"))).toBe(true);
   });
 
   it("registers the agentdev_status tool (AC-TOGGLE-1)", () => {
@@ -215,14 +242,14 @@ describe("extension entry — index.ts (wiring)", () => {
   it("OFF: a message is NOT a goal — plain pi (AC-TOGGLE-5 negative)", async () => {
     const { commands, hooks, ctx, ext } = loadExtension();
     await commands.get("agentdev")!.handler("off", ctx);
-    hooks.get("before_agent_start")!({ prompt: "hello" });
+    hooks.get("before_agent_start")!({ prompt: "hello" }, ctx);
     expect(ext.goals.count()).toBe(0);
   });
 
   it("ON: every message is captured as a goal (AC-TOGGLE-5)", async () => {
     const { commands, hooks, ctx, ext, started } = loadExtension();
     await commands.get("agentdev")!.handler("on", ctx);
-    hooks.get("before_agent_start")!({ prompt: "build a todo app" });
+    hooks.get("before_agent_start")!({ prompt: "build a todo app" }, ctx);
     expect(ext.goals.count()).toBe(1);
     expect(ext.goals.all()[0].text).toBe("build a todo app");
     await new Promise((r) => setTimeout(r, 10));
@@ -233,8 +260,8 @@ describe("extension entry — index.ts (wiring)", () => {
     const { commands, hooks, ctx, ext } = loadExtension();
     await commands.get("agentdev")!.handler("on", ctx);
     const hook = hooks.get("before_agent_start")!;
-    hook({ prompt: "first goal" });
-    hook({ prompt: "second goal" });
+    hook({ prompt: "first goal" }, ctx);
+    hook({ prompt: "second goal" }, ctx);
     const all = ext.goals.all();
     expect(all).toHaveLength(2);
     expect(all[1].goalId).toBe("goal-2");
@@ -245,7 +272,7 @@ describe("extension entry — index.ts (wiring)", () => {
   it("blank prompts are not goals and do not start a crew", () => {
     const { commands, hooks, ctx, ext, started } = loadExtension();
     void commands.get("agentdev")!.handler("on", ctx);
-    hooks.get("before_agent_start")!({ prompt: "   " });
+    hooks.get("before_agent_start")!({ prompt: "   " }, ctx);
     expect(ext.goals.count()).toBe(0);
     expect(started).toHaveLength(0);
   });

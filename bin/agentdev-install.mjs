@@ -246,7 +246,7 @@ export function ensureBrain(checkOnly = false) {
     console.error(`pi install failed: ${(r.stderr ?? "").slice(0, 400)}`);
     process.exit(1);
   }
-  console.log("agentdev brain: registered ✓ (extension + 3 skills)");
+  console.log("agentdev brain: registered ✓ (extension + 9 crew skills)");
   return { registered: true };
 }
 

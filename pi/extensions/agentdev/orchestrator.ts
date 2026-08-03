@@ -117,10 +117,10 @@ export interface Orchestrator {
   resume(goalId: string): Promise<GoalRun>;
   resumeAll(): Promise<GoalRun[]>;
   confirm(goalId: string, ok: boolean): void;
-  /** Leader handoff: the interactive turn's plan (or null when unparseable). */
-  acceptLeaderPlan(goalId: string, plan: PlanOutput | null): void;
+  /** Leader handoff: the interactive turn's plan + researched stack. */
+  acceptLeaderPlan(goalId: string, plan: PlanOutput | null, stack?: string | null): void;
   /** Leader handoff without an id (index.ts agent_end → latest live goal). */
-  acceptLeaderPlanForLatest(plan: PlanOutput | null): void;
+  acceptLeaderPlanForLatest(plan: PlanOutput | null, stack?: string | null): void;
   status(goalId: string): GoalRun | null;
   all(): GoalRun[];
 }
@@ -177,10 +177,15 @@ export function createOrchestrator(
   const runs = new Map<string, GoalRun>();
   /** Goals started this session (live leader turns can hand plans to them). */
   const liveGoals = new Set<string>();
+  /** Leader handoff payload: plan + researched stack (AC-LEADER-1). */
+  interface LeaderHandoff {
+    plan: PlanOutput | null;
+    stack: string | null;
+  }
   /** Pending leader-plan waits, keyed by goalId (AC-LEADER-1 handoff). */
-  const leaderWaiters = new Map<string, { resolve: (plan: PlanOutput | null) => void; timer: NodeJS.Timeout }>();
-  /** Plan that arrived before its waiter registered (races) — consumed next. */
-  let bufferedLeaderPlan: { plan: PlanOutput | null } | null = null;
+  const leaderWaiters = new Map<string, { resolve: (h: LeaderHandoff) => void; timer: NodeJS.Timeout }>();
+  /** Handoff that arrived before its waiter registered (races) — consumed next. */
+  let bufferedHandoff: LeaderHandoff | null = null;
 
   const loadPersisted = (goalId: string): PersistedGoal | null =>
     readJson<PersistedGoal>(stateFile(goalDir(cwd, goalId)));
@@ -289,19 +294,27 @@ export function createOrchestrator(
     // planning step. Accept its plan and skip the headless consensus loop;
     // timeout or unparseable output falls back to consensus.
     if (waitForLeaderPlan && liveGoals.has(p.goalId)) {
-      const leaderPlan = await new Promise<PlanOutput | null>((resolve) => {
-        const buffered = bufferedLeaderPlan;
+      const handoff = await new Promise<LeaderHandoff>((resolve) => {
+        const buffered = bufferedHandoff;
         if (buffered) {
-          bufferedLeaderPlan = null;
-          resolve(buffered.plan);
+          bufferedHandoff = null;
+          resolve(buffered);
           return;
         }
         const timer = setTimeout(() => {
           leaderWaiters.delete(p.goalId);
-          resolve(null);
+          resolve({ plan: null, stack: null });
         }, leaderPlanTimeoutMs);
         leaderWaiters.set(p.goalId, { resolve, timer });
       });
+      const leaderPlan = handoff.plan;
+      // researched stack (choose-stack research path) applies even when the
+      // plan fails validation — consensus then plans with the real stack
+      if (p.stack === "research" && handoff.stack) {
+        p.stack = handoff.stack;
+        ports.notify(`agentdev: researched stack → ${p.stack}`);
+        persist(p);
+      }
       if (leaderPlan && validatePlanOutput(leaderPlan, { deliberate }).ok) {
         p.plan = leaderPlan;
         p.approved = true;
@@ -566,24 +579,24 @@ export function createOrchestrator(
       return runPipeline(p);
     },
 
-    acceptLeaderPlan(goalId: string, plan: PlanOutput | null): void {
+    acceptLeaderPlan(goalId: string, plan: PlanOutput | null, stack: string | null = null): void {
       const waiter = leaderWaiters.get(goalId);
       if (!waiter) return; // no wait (consensus already running / not waiting)
       clearTimeout(waiter.timer);
       leaderWaiters.delete(goalId);
-      waiter.resolve(plan);
+      waiter.resolve({ plan, stack });
     },
 
-    acceptLeaderPlanForLatest(plan: PlanOutput | null): void {
+    acceptLeaderPlanForLatest(plan: PlanOutput | null, stack: string | null = null): void {
       const entries = [...leaderWaiters.entries()];
       if (entries.length === 0) {
-        bufferedLeaderPlan = { plan }; // consumed by the next waiter (race)
+        bufferedHandoff = { plan, stack }; // consumed by the next waiter (race)
         return;
       }
       const [goalId, waiter] = entries[entries.length - 1]; // serial turns → latest
       clearTimeout(waiter.timer);
       leaderWaiters.delete(goalId);
-      waiter.resolve(plan);
+      waiter.resolve({ plan, stack });
     },
 
     async resume(goalId: string): Promise<GoalRun> {
@@ -680,6 +693,19 @@ export function parseLeaderPlanOutput(text: string): PlanOutput | null {
       if (slice) return slice;
     }
   }
+  return null;
+}
+
+/**
+ * Extract the researched stack the leader picked (choose-stack research
+ * path): matches a `STACK: <id>` line or a "stack" key in the plan JSON.
+ */
+export function parseLeaderStack(text: string): string | null {
+  if (!text) return null;
+  const line = text.match(/STACK:\s*([a-zA-Z0-9_-]+)/i);
+  if (line) return line[1]!.toLowerCase();
+  const key = text.match(/"stack"\s*:\s*"([^"]+)"/i);
+  if (key) return key[1]!.toLowerCase();
   return null;
 }
 

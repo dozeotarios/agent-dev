@@ -49,7 +49,7 @@ export function reviewLensPrompt(
   codeContext: string,
 ): string {
   const rules = checklist.length > 0 ? checklist.map((c) => `- ${c}`).join("\n") : "(none)";
-  return `You are the ${lens} reviewer in a code review. Validate the code against this operator-defined checklist:
+  return `You are the ${lens} reviewer in a code review (agentdev-review). Validate the code against this operator-defined checklist:
 ${rules}
 
 Find BLOCKING issues. Reply with findings, one per line, each starting with exactly "BLOCKING: " or "NIT: ":
@@ -65,8 +65,10 @@ Your story: ${storyId}
 Acceptance criteria for this slice:
 ${criteria.map((c) => `- ${c}`).join("\n")}
 
-Work in the CURRENT directory (a git worktree). Follow TDD: write the failing test
-first, then implement until green (develop-tdd / enforce-first). Do NOT commit.
+Work in the CURRENT directory (a git worktree). Follow the agentdev methodology (agentdev-build):
+- develop tests FIRST: write the failing test, then implement until green (red-green-refactor, vertical slices).
+- Tests must be F.I.R.S.T. (fast, isolated, repeatable, self-verifying, timely) — agentdev-verify runs the suite after you.
+Do NOT commit. Do NOT touch files outside this worktree.
 Reply with EXACTLY one line: "STORY_DONE" when your tests pass, or "STORY_BLOCKED: <reason>".`;
 }
 

@@ -99,7 +99,17 @@ describe("agentdev install CLI (AC-INSTALL-1/2)", () => {
     expect(pkg.pi.extensions.length).toBeGreaterThan(0);
     expect(pkg.pi.skills.length).toBeGreaterThan(0);
     // the shipped skills exist on disk (what pi will discover)
-    for (const skill of ["choose-stack", "define-constraints", "define-language"]) {
+    for (const skill of [
+      "agentdev-map-codebase",
+      "agentdev-choose-stack",
+      "agentdev-define-language",
+      "agentdev-define-constraints",
+      "agentdev-plan",
+      "agentdev-build",
+      "agentdev-verify",
+      "agentdev-review",
+      "agentdev-commit",
+    ]) {
       expect(existsSync(join(process.cwd(), "pi", "skills", skill, "SKILL.md"))).toBe(true);
     }
     rmSync(home, { recursive: true, force: true });

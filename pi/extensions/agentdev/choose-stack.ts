@@ -23,6 +23,15 @@ export interface StackChoice {
 
 export const STACK_CANDIDATES: StackCandidate[] = [
   {
+    id: "research",
+    name: "🌐 Research best fit for this use case (web)",
+    rationale: {
+      performance: "The Leader researches the web for THIS goal — performance,",
+      ecosystem: "domain fit, ecosystem, deploy, maintainability — and picks the",
+      deploy: "best language (may be Rust, C++, … beyond the fixed list).",
+    },
+  },
+  {
     id: "typescript",
     name: "TypeScript (Node.js)",
     rationale: {
