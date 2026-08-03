@@ -134,8 +134,8 @@ export function createRealPorts(opts: RealPortsOptions): OrchestratorPorts {
       return verifyWork(worktree);
     },
     async sliceContext(worktree, lens) {
-      // REVIEW CONTEXT = the WORKER's worktree diff (the code being reviewed
-      // lives there, not in the main checkout — empty main = no context).
+      // REVIEW CONTEXT = the merged staging / worker worktree: tracked diff
+      // PLUS untracked files (new code must be visible to reviewers).
       const dir = worktree || process.cwd();
       try {
         const stat = await execCollect("git", ["-C", dir, "diff", "HEAD", "--stat", "--", ".", ":(exclude).agentdev"], {
@@ -144,7 +144,28 @@ export function createRealPorts(opts: RealPortsOptions): OrchestratorPorts {
         const body = await execCollect("git", ["-C", dir, "diff", "HEAD", "--", ".", ":(exclude).agentdev"], {
           timeoutMs: 15_000,
         });
-        return `# worktree: ${dir}\n# git diff --stat (HEAD)\n${stat.stdout.slice(0, 2000)}\n# diff (bounded)\n${body.stdout.slice(0, 9000)}\n# lens: ${lens}`;
+        let untracked = "";
+        try {
+          const status = await execCollect("git", ["-C", dir, "status", "--porcelain", "--untracked-files=all"], {
+            timeoutMs: 15_000,
+          });
+          const files = status.stdout
+            .split("\n")
+            .filter((l) => l.startsWith("?? "))
+            .map((l) => l.slice(3).trim())
+            .filter((f) => !f.includes(".agentdev"));
+          let budget = 8000;
+          for (const f of files.slice(0, 10)) {
+            const r = await execCollect("cat", [f], { cwd: dir, timeoutMs: 10_000 });
+            const chunk = r.stdout.slice(0, 2000);
+            untracked += `\n# --- untracked: ${f} ---\n${chunk}`;
+            budget -= chunk.length;
+            if (budget <= 0) break;
+          }
+        } catch {
+          /* no untracked scan available */
+        }
+        return `# worktree: ${dir}\n# git diff --stat (HEAD)\n${stat.stdout.slice(0, 2000)}\n# diff (bounded)\n${body.stdout.slice(0, 9000)}${untracked}\n# lens: ${lens}`;
       } catch {
         return `# (no git diff available in ${dir}) lens: ${lens}`;
       }

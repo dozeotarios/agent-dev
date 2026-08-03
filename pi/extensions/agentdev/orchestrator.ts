@@ -593,16 +593,20 @@ export function createOrchestrator(
     const loop = createReviewLoop(5);
     const reviewWorktree = p.stagingWorktree ?? cwd;
     let round = 1;
+    let previousBlocking: string[] = [];
     while (!loop.isComplete() && round <= 6) {
       const findings: Finding[] = [];
       for (const lens of LENSES) {
         // review the REAL code: the merged staging worktree diff
         const ctx = await ports.sliceContext(reviewWorktree, lens);
+        const prev = previousBlocking.length > 0
+          ? `\nPREVIOUS ROUND'S BLOCKING FINDINGS (a rework worker addressed them):\n${previousBlocking.join("\n")}\nVerify EACH is actually resolved in the code. Do NOT re-report resolved findings. Only NEW or still-broken issues are BLOCKING. SELF-AUDIT: drop low-confidence or nit-level items before reporting.`
+          : "";
         const scope = p.plan?.filePlan
           ? `\n\nTOUCH-PLAN (SCOPE BOUNDARY — binding):\nstructure: ${p.plan.filePlan.structure}\ncreate: ${p.plan.filePlan.create.join(", ")}\nmodify: ${p.plan.filePlan.modify.join(", ")}\ndoNotTouch: ${p.plan.filePlan.doNotTouch.join(", ")}\nAny work touching files outside this map is a BLOCKING scope violation.`
           : "";
         const out = await ports.ask(
-          `You are the ${lens} reviewer in a code review (agentdev-review). Validate the code against this operator-defined checklist:\n${(checklist[lens] ?? []).map((c) => `- ${c}`).join("\n")}\n\nFind BLOCKING issues. Reply with findings, one per line, each starting with exactly "BLOCKING: " or "NIT: ":\n\n${ctx.slice(0, 12_000)}${scope}`,
+          `You are the ${lens} reviewer in a code review (agentdev-review). Validate the code against this operator-defined checklist:\n${(checklist[lens] ?? []).map((c) => `- ${c}`).join("\n")}\n\nFind BLOCKING issues. Reply with findings, one per line, each starting with exactly "BLOCKING: " or "NIT: ":\n\n${ctx.slice(0, 12_000)}${scope}${prev}`,
         );
         for (const line of out.split("\n")) {
           const t = line.trim();
@@ -611,9 +615,39 @@ export function createOrchestrator(
         }
       }
       const result = loop.submitRound(findings, checklist);
+      if (result.blocking.length > 0) {
+        previousBlocking = result.blocking.map((f) => `- [${f.lens}] ${f.text}`);
+      }
       if (result.status === "rework" && result.blocking.length > 0) {
-        // route to workers and rebuild (AC-REVIEW-3) — bounded by the loop
-        ports.notify(`agentdev: review round ${round} — ${result.blocking.length} blocking findings, reworking`, "warning");
+        // REAL rework (AC-REVIEW-3): a fix worker in the staging worktree
+        // resolves the findings, then verification re-runs — bounded by the loop
+        ports.notify(
+          `agentdev: review round ${round} — ${result.blocking.length} blocking findings, spawning rework worker`,
+          "warning",
+        );
+        const findingsText = result.blocking
+          .map((f) => `- [${f.lens}] ${f.text.slice(0, 400)}`)
+          .join("\n");
+        const fix = await ports.spawnWorker({
+          goalId: p.goalId,
+          storyId: `review-fix-r${round}`,
+          worktree: reviewWorktree,
+          criteria: [`Resolve EVERY review finding (fix the code, keep the filePlan scope):\n${findingsText}`],
+          goalText: p.goalText,
+          stack: p.stack,
+          mode: p.mode,
+          filePlan: p.plan?.filePlan,
+        });
+        const fixOutcome = await ports.waitForWorker(fix);
+        if (fixOutcome !== "done") {
+          ports.notify(`agentdev: review fix worker ${fixOutcome} — pane left open`, "warning");
+          throw new Error(`review fix worker ${fixOutcome}`);
+        }
+        await ports.teardownWorker(fix);
+        const v: VerifyResult = await ports.verifyStory(reviewWorktree);
+        if (!v.ok) {
+          throw new Error(`review rework broke the suite: ${v.output.slice(0, 300)}`);
+        }
       }
       round += 1;
     }

@@ -26,6 +26,8 @@ describe("agentdev-crew (AC-CREW-1..5) — real herdr spawn cycle", () => {
       const repo = mkdtempSync(join(tmpdir(), "agentdev-crew-it-"));
       const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
       execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+      execFileSync("git", ["config", "user.email", "crew@test.local"], { cwd: repo });
+      execFileSync("git", ["config", "user.name", "Crew Test"], { cwd: repo });
       // a trivial test command so the worker's "run the suite" step passes
       writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "crew-it", scripts: { test: "node -e \"process.exit(0)\"" } }, null, 2));
 

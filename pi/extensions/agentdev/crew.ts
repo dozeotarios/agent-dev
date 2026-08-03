@@ -130,7 +130,8 @@ do NOT touch: ${input.filePlan.doNotTouch.join(", ") || "(nothing restricted)"}`
 RULES (binding):
 - Follow agentdev-build: write the failing test FIRST, then implement until green (red-green-refactor, vertical slices). Tests must be F.I.R.S.T.
 - Run the project's test suite yourself until it is fully green.
-- Do NOT commit. Do NOT touch files outside this worktree.
+- COMMIT your work on THIS branch when green: \`git add -A && git commit -m "feat(<storyId>): <summary>"\` — your commit is merged into the integration staging (never push, never touch main).
+- Do NOT touch files outside this worktree.
 - You are supervised by the Subleader — work autonomously; do not ask questions.
 
 WHEN DONE: write your report to ${input.reportPath} with EXACTLY this shape:
