@@ -435,6 +435,12 @@ function cmdLaunch(piArgs) {
       return launchHerdrHosted(piArgs);
     } catch (e) {
       console.error(`herdr-hosted launch failed (${e.message}) — falling back to pi in this terminal.`);
+      if (/protocol_mismatch/.test(String(e.message))) {
+        console.error(
+          "Hint: the running herdr server is an older build than the installed binary. " +
+            "Run `herdr server stop`, then \`agentdev\` again (the launcher will start the new server).",
+        );
+      }
     }
   }
   const crewOn = readToggleState(process.cwd());
