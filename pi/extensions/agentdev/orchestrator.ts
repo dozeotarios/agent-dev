@@ -595,25 +595,32 @@ export function createOrchestrator(
     let round = 1;
     let previousBlocking: string[] = [];
     while (!loop.isComplete() && round <= 6) {
-      const findings: Finding[] = [];
-      for (const lens of LENSES) {
-        // review the REAL code: the merged staging worktree diff
-        const ctx = await ports.sliceContext(reviewWorktree, lens);
-        const prev = previousBlocking.length > 0
-          ? `\nPREVIOUS ROUND'S BLOCKING FINDINGS (a rework worker addressed them):\n${previousBlocking.join("\n")}\nVerify EACH is actually resolved in the code. Do NOT re-report resolved findings. Only NEW or still-broken issues are BLOCKING. SELF-AUDIT: drop low-confidence or nit-level items before reporting.`
-          : "";
-        const scope = p.plan?.filePlan
-          ? `\n\nTOUCH-PLAN (SCOPE BOUNDARY — binding):\nstructure: ${p.plan.filePlan.structure}\ncreate: ${p.plan.filePlan.create.join(", ")}\nmodify: ${p.plan.filePlan.modify.join(", ")}\ndoNotTouch: ${p.plan.filePlan.doNotTouch.join(", ")}\nAny work touching files outside this map is a BLOCKING scope violation.`
-          : "";
-        const out = await ports.ask(
-          `You are the ${lens} reviewer in a code review (agentdev-review). Validate the code against this operator-defined checklist:\n${(checklist[lens] ?? []).map((c) => `- ${c}`).join("\n")}\n\nFind BLOCKING issues. Reply with findings, one per line, each starting with exactly "BLOCKING: " or "NIT: ":\n\n${ctx.slice(0, 12_000)}${scope}${prev}`,
-        );
-        for (const line of out.split("\n")) {
-          const t = line.trim();
-          if (/^BLOCKING:/i.test(t)) findings.push({ lens, severity: "blocking", text: t, storyId: null });
-          else if (/^NIT:/i.test(t)) findings.push({ lens, severity: "nit", text: t, storyId: null });
-        }
-      }
+      // PARALLEL lenses: the 6 personas are independent read-only passes over
+      // the same code — no data dependency between them (unlike ralplan's
+      // sequential architect→critic chain). Parallel = ~6x faster rounds,
+      // same total tokens, more convergence budget in the same wall-clock.
+      const prev = previousBlocking.length > 0
+        ? `\nPREVIOUS ROUND'S BLOCKING FINDINGS (a rework worker addressed them):\n${previousBlocking.join("\n")}\nVerify EACH is actually resolved in the code. Do NOT re-report resolved findings. Only NEW or still-broken issues are BLOCKING. SELF-AUDIT: drop low-confidence or nit-level items before reporting.`
+        : "";
+      const scope = p.plan?.filePlan
+        ? `\n\nTOUCH-PLAN (SCOPE BOUNDARY — binding):\nstructure: ${p.plan.filePlan.structure}\ncreate: ${p.plan.filePlan.create.join(", ")}\nmodify: ${p.plan.filePlan.modify.join(", ")}\ndoNotTouch: ${p.plan.filePlan.doNotTouch.join(", ")}\nAny work touching files outside this map is a BLOCKING scope violation.`
+        : "";
+      const lensRounds = await Promise.all(
+        LENSES.map(async (lens) => {
+          const ctx = await ports.sliceContext(reviewWorktree, lens);
+          const out = await ports.ask(
+            `You are the ${lens} reviewer in a code review (agentdev-review). Validate the code against this operator-defined checklist:\n${(checklist[lens] ?? []).map((c) => `- ${c}`).join("\n")}\n\nFind BLOCKING issues. Reply with findings, one per line, each starting with exactly "BLOCKING: " or "NIT: ":\n\n${ctx.slice(0, 12_000)}${scope}${prev}`,
+          );
+          const found: Finding[] = [];
+          for (const line of out.split("\n")) {
+            const t = line.trim();
+            if (/^BLOCKING:/i.test(t)) found.push({ lens, severity: "blocking", text: t, storyId: null });
+            else if (/^NIT:/i.test(t)) found.push({ lens, severity: "nit", text: t, storyId: null });
+          }
+          return found;
+        }),
+      );
+      const findings: Finding[] = lensRounds.flat();
       const result = loop.submitRound(findings, checklist);
       if (result.blocking.length > 0) {
         previousBlocking = result.blocking.map((f) => `- [${f.lens}] ${f.text}`);
