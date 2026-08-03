@@ -172,6 +172,47 @@ describe("plan output validation (AC-RALPLAN-7)", () => {
   it("rejects empty acceptance criteria", () => {
     expect(validatePlanOutput({ ...goodPlan, acceptanceCriteria: [] }, { deliberate: false }).ok).toBe(false);
   });
+  it("accepts a story split with disjoint files (AC-PLAN-STORIES)", () => {
+    const res = validatePlanOutput(
+      {
+        ...goodPlan,
+        stories: [
+          { id: "story-1", criteria: ["c1"], files: { create: ["src/a.ts"], modify: [], doNotTouch: [] } },
+          { id: "story-2", criteria: ["c2"], files: { create: ["src/b.ts"], modify: ["src/shared.ts"], doNotTouch: [] } },
+        ],
+      },
+      { deliberate: false },
+    );
+    expect(res.ok).toBe(true);
+  });
+
+  it("rejects overlapping story files — parallel workers must never collide", () => {
+    const res = validatePlanOutput(
+      {
+        ...goodPlan,
+        stories: [
+          { id: "story-1", criteria: ["c1"], files: { create: ["src/a.ts"], modify: ["src/shared.ts"], doNotTouch: [] } },
+          { id: "story-2", criteria: ["c2"], files: { create: ["src/b.ts"], modify: ["src/shared.ts"], doNotTouch: [] } },
+        ],
+      },
+      { deliberate: false },
+    );
+    expect(res.ok).toBe(false);
+    expect(res.errors.join(" ")).toMatch(/overlapping story files/);
+  });
+
+  it("rejects a story without criteria", () => {
+    const res = validatePlanOutput(
+      {
+        ...goodPlan,
+        stories: [{ id: "story-1", criteria: [], files: { create: ["src/a.ts"], modify: [], doNotTouch: [] } }],
+      },
+      { deliberate: false },
+    );
+    expect(res.ok).toBe(false);
+    expect(res.errors.join(" ")).toMatch(/missing criteria/);
+  });
+
   it("rejects a missing ADR field", () => {
     expect(validatePlanOutput({ ...goodPlan, adr: { ...goodPlan.adr, why: "" } }, { deliberate: false }).ok).toBe(false);
   });

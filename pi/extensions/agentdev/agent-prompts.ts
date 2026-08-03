@@ -22,13 +22,18 @@ export const FILE_PLAN_SCHEMA = `"filePlan": {
 export const FILE_PLAN_INSPECT = `BEFORE emitting: if the repo has code, inspect its real layout (ls/read the tree) and anchor EVERY path in it — the crew builds exactly these files and nothing else. Be granular: files, not vague directories; include tests and configs in the touch map.`;
 
 /** Replaces the planner's old JSON schema in prompts. */
-export const PLANNER_JSON_SCHEMA = `{ "principles": [3-5 strings], "drivers": [exactly 3 strings], "options": [{"name","pros":[...],"cons":[...]} x >=2], "adr": { "decision", "drivers":[...], "alternatives":[...], "why", "consequences":[...], "followups":[...] }, ${FILE_PLAN_SCHEMA}, "acceptanceCriteria": [>=3 testable strings] }`;
+export const STORIES_SCHEMA = `"stories": [ { "id": "story-1", "criteria": [2-3 testable strings], "files": { "create": [paths], "modify": [paths], "doNotTouch": [paths] } } x N ]`;
+
+/** Story-split instruction: DISJOINT files — parallel workers never overlap. */
+export const STORIES_SPLIT = `SPLIT the work into stories (the worker count = stories.length, so split by how much work the plan has). Every story gets its own criteria and its own files. HARD RULE: no file may appear in the create/modify of TWO different stories — if two pieces of work touch the same file, they are ONE story. Include tests and configs in each story's files.`;
+
+export const PLANNER_JSON_SCHEMA = `{ "principles": [3-5 strings], "drivers": [exactly 3 strings], "options": [{"name","pros":[...],"cons":[...]} x >=2], "adr": { "decision", "drivers":[...], "alternatives":[...], "why", "consequences":[...], "followups":[...] }, ${FILE_PLAN_SCHEMA}, ${STORIES_SCHEMA}, "acceptanceCriteria": [>=3 testable strings] }`;
 
 export const RALPLAN_ROLE_INSTRUCTIONS: Record<Role, string> = {
   planner:
     `You are the Planner in a consensus-planning loop. ` +
     `Emit ONLY JSON: ${PLANNER_JSON_SCHEMA}. No prose. ` +
-    FILE_PLAN_INSPECT,
+    FILE_PLAN_INSPECT + " " + STORIES_SPLIT,
   architect:
     `You are the Architect in a consensus-planning loop (oh-my-claudecode style). ` +
     `Review the plan for architectural soundness. NEVER rubber-stamp the favored ` +

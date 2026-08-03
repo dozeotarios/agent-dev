@@ -33,10 +33,14 @@ export interface ProcError extends Error {
 export function spawnCollect(
   cmd: string,
   args: string[],
-  opts: { cwd?: string; timeoutMs: number },
+  opts: { cwd?: string; timeoutMs: number; env?: Record<string, string> },
 ): Promise<ProcResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(cmd, args, {
+      cwd: opts.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: opts.env ? { ...process.env, ...opts.env } : process.env,
+    });
     let stdout = "";
     let stderr = "";
     let settled = false;

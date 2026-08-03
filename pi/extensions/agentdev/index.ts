@@ -80,11 +80,13 @@ Your job is PLANNING (agentdev-plan). Think the goal through, then emit the plan
     "modify": ["exact repo-root-relative paths of EXISTING files to change"],
     "doNotTouch": ["paths that must stay untouched"]
   },
+  "stories": [ { "id": "story-1", "criteria": [2-3 testable strings], "files": { "create": [paths], "modify": [paths], "doNotTouch": [paths] } } x N ],
   "acceptanceCriteria": [at least 3 testable strings]
 }
 
 Rules:
 - filePlan is MANDATORY and GRANULAR: if the repo has code, inspect its real layout first (read-only tools allowed: ls/read/grep/find) and anchor every path in it. Files, not vague directories — include tests/configs. Explicitly list what you will NOT touch.
+- stories SPLIT the work; the worker count = stories.length (split by how much work the plan has). HARD RULE: no file may appear in the create/modify of TWO different stories — if two pieces of work touch the same file, they are ONE story.
 - acceptanceCriteria must be concrete, testable statements (they become the stories your Subworkers build and verify).
 - Keep the plan tight: countable stories, no gold-plating.
 - ${tools}Read-only inspection allowed. Do NOT execute anything, do NOT write code — plan only.
@@ -359,6 +361,8 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
       });
 
       pi.on("before_agent_start", async (event, ctx) => {
+        // headless crew agents (pi -p) must never capture goals — they ARE the crew
+        if (process.env.AGENTDEV_NO_CREW === "1" || process.argv.includes("-p")) return;
         if (!toggle.isOn()) return; // plain pi when OFF
         const prompt = event.prompt.trim();
         if (!prompt) return;
@@ -395,6 +399,7 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
 
       // Leader handoff capture: the interactive turn produced the plan.
       pi.on("agent_end", (event) => {
+        if (process.env.AGENTDEV_NO_CREW === "1" || process.argv.includes("-p")) return;
         if (!toggle.isOn() || !orch) return;
         const messages = (event as { messages?: { role?: string; content?: unknown }[] }).messages ?? [];
         const text = lastAssistantText(messages);

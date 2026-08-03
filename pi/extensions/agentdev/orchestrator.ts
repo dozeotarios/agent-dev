@@ -67,6 +67,8 @@ export interface BuildContext {
   mode?: string;
   /** Granular touch map from the plan — workers build exactly this. */
   filePlan?: import("./ralplan").FilePlan;
+  /** This story's OWN disjoint file set (AC-PLAN-STORIES). */
+  storyFiles?: import("./ralplan").PlanStoryFiles;
 }
 
 export interface ReviewRoundInput {
@@ -133,6 +135,8 @@ interface PersistedGoal {
   constraints: ReviewConstraints;
   mode: ProjectMode;
   storyCriteria: Record<string, string[]>;
+  /** Per-story disjoint file sets from the plan split (AC-PLAN-STORIES). */
+  storyFiles: Record<string, import("./ralplan").PlanStoryFiles>;
   gate: GateState | null;
 }
 
@@ -435,7 +439,13 @@ export function createOrchestrator(
   async function stepDispatch(p: PersistedGoal): Promise<void> {
     if (p.step !== "dispatch") return;
     if (!p.plan) throw new Error("dispatch requires an approved plan");
-    const stories = planToStories(p.plan);
+    // STORY SPLIT (AC-PLAN-STORIES): the plan defines the split — worker
+    // count = stories.length, each story with its own DISJOINT files (parallel
+    // workers never overlap). Fallback: deterministic criteria slicing.
+    const split = p.plan.stories && p.plan.stories.length > 0 ? p.plan.stories : null;
+    const stories = split
+      ? split.map((st) => ({ storyId: st.id }))
+      : planToStories(p.plan, Math.max(1, Math.ceil(p.plan.acceptanceCriteria.length / maxWorktrees)));
     const leases: WorktreeLeases = readJson(worktreeLeasesFile(cwd, p.goalId)) ?? { free: [], used: [] };
     const pool = createWorktreePool({
       maxSize: maxWorktrees,
@@ -447,8 +457,15 @@ export function createOrchestrator(
     });
     const result = dispatchPlan({ planId: p.goalId, stories }, pool);
     p.storyCriteria = {};
+    p.storyFiles = {};
     for (const w of result.workers) {
-      p.storyCriteria[w.storyId] = storiesFor(stories, w.storyId, p.plan);
+      if (split) {
+        const st = split.find((x) => x.id === w.storyId);
+        p.storyCriteria[w.storyId] = st?.criteria ?? [];
+        if (st?.files) p.storyFiles[w.storyId] = st.files;
+      } else {
+        p.storyCriteria[w.storyId] = storiesFor(stories, w.storyId, p.plan);
+      }
     }
     installCommitHook(baseRepo); // AC-GIT-4 hook-commits
     // fleet nodes for every role (AC-VIS-1): panes are created per worker
@@ -500,6 +517,8 @@ export function createOrchestrator(
           goalText: p.goalText,
           stack: p.stack,
           mode: p.mode,
+          filePlan: p.plan?.filePlan,
+          storyFiles: p.storyFiles[w.storyId],
         });
         try {
           f.setPaneId(w.storyId, worker.paneId); // fleet node id == storyId
@@ -545,11 +564,17 @@ export function createOrchestrator(
     if (p.step !== "review") return;
     const checklist = constraintsToChecklist(p.constraints);
     const loop = createReviewLoop(5);
+    const reviewWorkers = loadWorkers(cwd, p);
     let round = 1;
     while (!loop.isComplete() && round <= 6) {
       const findings: Finding[] = [];
       for (const lens of LENSES) {
-        const ctx = await ports.sliceContext("", lens); // orchestrator-level context
+        // review the REAL code: each worker's worktree diff, combined
+        const contexts: string[] = [];
+        for (const w of reviewWorkers) {
+          contexts.push(await ports.sliceContext(w.worktreePath, lens));
+        }
+        const ctx = contexts.join("\n\n===== next worktree =====\n\n");
         const scope = p.plan?.filePlan
           ? `\n\nTOUCH-PLAN (SCOPE BOUNDARY — binding):\nstructure: ${p.plan.filePlan.structure}\ncreate: ${p.plan.filePlan.create.join(", ")}\nmodify: ${p.plan.filePlan.modify.join(", ")}\ndoNotTouch: ${p.plan.filePlan.doNotTouch.join(", ")}\nAny work touching files outside this map is a BLOCKING scope violation.`
           : "";
@@ -570,6 +595,16 @@ export function createOrchestrator(
       round += 1;
     }
     if (!loop.isComplete()) throw new Error("review loop did not terminate");
+    // fail-closed: blocking findings that survived the rework budget BLOCK the
+    // goal — never commit code the reviewers still flag
+    const remaining = loop.remainingBlocking();
+    if (remaining.length > 0) {
+      throw new Error(
+        `review did not converge — ${remaining.length} blocking finding(s) remain: ${remaining
+          .map((f) => f.text.slice(0, 120))
+          .join(" | ")}`,
+      );
+    }
     // Subleader → Leader report (AC-LEADER-2): a factual brief of what the
     // crew built and verified, surfaced in the interactive session AND sent
     // into the Subleader's pane (visible hierarchy).
@@ -668,6 +703,7 @@ export function createOrchestrator(
         constraints: { failureModes: [], edgeCases: [], invariants: [], mustNots: [] },
         mode: "direct-PR",
         storyCriteria: {},
+        storyFiles: {},
         gate: null,
       };
       liveGoals.add(goalId); // the interactive leader turn will hand its plan
@@ -771,6 +807,23 @@ function parsePlanOutput(json: string): PlanOutput | null {
             doNotTouch: Array.isArray(j.filePlan.doNotTouch) ? j.filePlan.doNotTouch.map(String) : [],
           }
         : { structure: "", create: [], modify: [], doNotTouch: [] },
+      stories: Array.isArray(j.stories)
+        ? j.stories
+            .filter((st: unknown) => !!st && typeof st === "object")
+            .map((st: unknown) => {
+              const s2 = st as Record<string, unknown>;
+              const files = (s2.files ?? {}) as Record<string, unknown>;
+              return {
+                id: String(s2.id ?? ""),
+                criteria: Array.isArray(s2.criteria) ? s2.criteria.map(String) : [],
+                files: {
+                  create: Array.isArray(files.create) ? (files.create as unknown[]).map(String) : [],
+                  modify: Array.isArray(files.modify) ? (files.modify as unknown[]).map(String) : [],
+                  doNotTouch: Array.isArray(files.doNotTouch) ? (files.doNotTouch as unknown[]).map(String) : [],
+                },
+              };
+            })
+        : undefined,
     };
   } catch {
     return null;

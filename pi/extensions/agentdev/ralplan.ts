@@ -188,6 +188,20 @@ export interface FilePlan {
   doNotTouch: string[];
 }
 
+/** One story's own DISJOINT file set — parallel workers never overlap. */
+export interface PlanStoryFiles {
+  create: string[];
+  modify: string[];
+  doNotTouch: string[];
+}
+
+/** One story of the plan: its own criteria + its own files. */
+export interface PlanStory {
+  id: string;
+  criteria: string[];
+  files: PlanStoryFiles;
+}
+
 export interface PlanOutput {
   adr: {
     decision: string;
@@ -200,6 +214,12 @@ export interface PlanOutput {
   acceptanceCriteria: string[];
   /** Granular touch map (AC-PLAN-FILES): what to write/modify/never touch. */
   filePlan: FilePlan;
+  /**
+   * Optional explicit SPLIT (AC-PLAN-STORIES): each story carries its own
+   * criteria + disjoint files; the worker count = stories.length. When
+   * absent, criteria are sliced deterministically (planToStories fallback).
+   */
+  stories?: PlanStory[];
   preMortem?: string[];
   testPlan?: string[];
 }
@@ -260,6 +280,31 @@ export function validatePlanOutput(
     for (const list of [fp.create, fp.modify, fp.doNotTouch]) {
       for (const p of list ?? []) {
         if (!p.trim()) errors.push("filePlan paths must be non-empty");
+      }
+    }
+  }
+  // Story split (AC-PLAN-STORIES): when present, stories must be disjoint in
+  // their files — parallel workers must never touch the same file.
+  const stories = output.stories;
+  if (stories && stories.length > 0) {
+    for (const st of stories) {
+      if (!st.id?.trim()) errors.push("story missing id");
+      if ((st.criteria?.length ?? 0) === 0) errors.push(`story ${st.id ?? "?"} missing criteria`);
+      for (const list of [st.files?.create, st.files?.modify, st.files?.doNotTouch]) {
+        for (const fp of list ?? []) {
+          if (!fp.trim()) errors.push(`story ${st.id ?? "?"} has an empty file path`);
+        }
+      }
+    }
+    const seen = new Map<string, string>();
+    for (const st of stories) {
+      for (const f of [...(st.files?.create ?? []), ...(st.files?.modify ?? [])]) {
+        const prev = seen.get(f);
+        if (prev) {
+          errors.push(`overlapping story files: "${f}" in both ${prev} and ${st.id}`);
+        } else {
+          seen.set(f, st.id ?? "?");
+        }
       }
     }
   }

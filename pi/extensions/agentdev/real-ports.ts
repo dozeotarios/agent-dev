@@ -12,6 +12,12 @@
  */
 
 import { spawnCollect, execCollect } from "./proc";
+/** Headless crew agents: never auto-on / never capture goals themselves. */
+const HEADLESS_CREW_ENV: Record<string, string> = {
+  AGENTDEV_NO_CREW: "1",
+  AGENTDEV_AUTO_ON: "0",
+};
+
 import {
   spawnWorker as crewSpawnWorker,
   waitForWorker as crewWaitForWorker,
@@ -45,7 +51,10 @@ export interface RealPortsOptions {
 /** Ask a REAL pi agent (headless `pi -p`). Async — never blocks the session. */
 export async function askPi(prompt: string, timeoutMs = 300_000, piBin = "pi"): Promise<string> {
   try {
-    const r = await spawnCollect(piBin, ["-p", frameUntrusted(prompt)], { timeoutMs });
+    const r = await spawnCollect(piBin, ["-p", frameUntrusted(prompt)], {
+      timeoutMs,
+      env: HEADLESS_CREW_ENV,
+    });
     return r.stdout.trim();
   } catch (e) {
     const err = e as { code?: number | null; stderr?: string; message?: string; timedOut?: boolean };
@@ -107,15 +116,20 @@ export function createRealPorts(opts: RealPortsOptions): OrchestratorPorts {
     verifyStory(worktree) {
       return verifyWork(worktree);
     },
-    async sliceContext(_worktree, lens) {
-      // goal-level context: recent git diff + worktree file listing
+    async sliceContext(worktree, lens) {
+      // REVIEW CONTEXT = the WORKER's worktree diff (the code being reviewed
+      // lives there, not in the main checkout — empty main = no context).
+      const dir = worktree || process.cwd();
       try {
-        const r = await execCollect("git", ["diff", "HEAD", "--stat", "--", ".", ":(exclude).agentdev"], {
+        const stat = await execCollect("git", ["-C", dir, "diff", "HEAD", "--stat", "--", ".", ":(exclude).agentdev"], {
           timeoutMs: 15_000,
         });
-        return `# git diff --stat (HEAD)\n${r.stdout.slice(0, 4000)}\n# lens: ${lens}`;
+        const body = await execCollect("git", ["-C", dir, "diff", "HEAD", "--", ".", ":(exclude).agentdev"], {
+          timeoutMs: 15_000,
+        });
+        return `# worktree: ${dir}\n# git diff --stat (HEAD)\n${stat.stdout.slice(0, 2000)}\n# diff (bounded)\n${body.stdout.slice(0, 9000)}\n# lens: ${lens}`;
       } catch {
-        return `# (no git diff available) lens: ${lens}`;
+        return `# (no git diff available in ${dir}) lens: ${lens}`;
       }
     },
     async confirmCommit(goalId, summary) {

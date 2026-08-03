@@ -41,9 +41,26 @@ export interface CrewBriefInput {
   reportPath: string;
   /** Granular touch map from the plan (AC-PLAN-FILES) — binding scope. */
   filePlan?: { structure: string; create: string[]; modify: string[]; doNotTouch: string[] };
+  /** THIS story's own disjoint files (AC-PLAN-STORIES) — the worker's exact scope. */
+  storyFiles?: { create: string[]; modify: string[]; doNotTouch: string[] };
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * herdr agent names: 1-32 chars, lowercase letters/digits/'-'/'_', must start
+ * with a lowercase letter. Story-derived names need sanitizing (AC-CREW-2).
+ */
+export function sanitizeAgentName(prefix: string, id: string): string {
+  const base = `${prefix}-${id}`
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  let name = base.slice(0, 32) || prefix.slice(0, 32);
+  if (!/^[a-z]/.test(name)) name = `w${name}`.slice(0, 32);
+  return name;
+}
 
 function readFileSafe(path: string): string | null {
   try {
@@ -68,12 +85,16 @@ ACCEPTANCE CRITERIA for your slice (your contract — every one must be verifiab
 ${input.criteria.map((c) => `- ${c}`).join("\n")}
 
 TOUCH PLAN (SCOPE BOUNDARY — binding, from the approved plan):
-${input.filePlan
+YOUR STORY'S FILES (yours alone — parallel workers never touch these):
+${input.storyFiles
+    ? `create ONLY: ${input.storyFiles.create.join(", ") || "(none)"}
+modify ONLY: ${input.storyFiles.modify.join(", ") || "(none)"}
+do NOT touch (even other stories' files): ${input.storyFiles.doNotTouch.join(", ") || "(nothing restricted)"}`
+    : "(no per-story file map — stay inside your worktree and your story)"}
+GLOBAL boundaries: ${input.filePlan
     ? `structure: ${input.filePlan.structure}
-create ONLY: ${input.filePlan.create.join(", ") || "(none)"}
-modify ONLY: ${input.filePlan.modify.join(", ") || "(none)"}
 do NOT touch: ${input.filePlan.doNotTouch.join(", ") || "(nothing restricted)"}`
-    : "(no file plan provided — stay inside your worktree and your story)"}
+    : "(none)"}
 
 RULES (binding):
 - Follow agentdev-build: write the failing test FIRST, then implement until green (red-green-refactor, vertical slices). Tests must be F.I.R.S.T.
@@ -108,7 +129,7 @@ export function spawnWorker(
   opts: { cwd: string },
 ): CrewWorker {
   const ref = adapter.workspaceCreate({ cwd: ctx.worktree, label: `W: ${ctx.storyId}` });
-  const name = `worker-${ctx.storyId}`;
+  const name = sanitizeAgentName("worker", ctx.storyId);
   adapter.agentStart(name, "pi", ref.paneId);
   // report lives in the goal's dir under the MAIN checkout — the worker
   // writes it there (absolute path), never into the repo's git tree
@@ -132,6 +153,7 @@ export function spawnWorker(
       worktree: ctx.worktree,
       reportPath,
       filePlan: ctx.filePlan,
+      storyFiles: ctx.storyFiles,
     }),
   );
   return {
@@ -156,18 +178,24 @@ export async function waitForWorker(
   timeoutMs = 1_800_000,
 ): Promise<CrewOutcome> {
   const deadline = Date.now() + timeoutMs;
+  // herdr agent states can flap transiently (detection resets, turn boundaries):
+  // only a SUSTAINED done (2 consecutive polls) without a report counts as blocked
+  let doneStreak = 0;
   while (Date.now() < deadline) {
     const report = readFileSafe(w.reportPath);
     if (report) return parseWorkerReport(report).outcome;
     try {
       const info = adapter.paneGet(w.paneId);
-      if (info.agentStatus === "done" || info.agentStatus === "unknown") {
-        // agent settled — the report must be there; give it one beat, then
-        // judge the worker on its contract
-        await sleep(2_000);
-        const again = readFileSafe(w.reportPath);
-        if (again) return parseWorkerReport(again).outcome;
-        if (info.agentStatus === "done") return "blocked"; // settled without report
+      if (info.agentStatus === "done") {
+        doneStreak += 1;
+        if (doneStreak >= 2) {
+          await sleep(2_000);
+          const again = readFileSafe(w.reportPath);
+          if (again) return parseWorkerReport(again).outcome;
+          return "blocked"; // settled twice without delivering the report contract
+        }
+      } else {
+        doneStreak = 0; // still working / unknown — keep supervising
       }
     } catch {
       return "dead"; // pane/agent gone mid-work
@@ -197,7 +225,7 @@ export function spawnSubleader(
   input: { goalId: string; goalText: string; plan: string; workers: string[] },
 ): CrewWorker {
   const ref = adapter.workspaceCreate({ cwd: process.cwd(), label: `S: ${input.goalId}` });
-  const name = `subleader-${input.goalId}`;
+  const name = sanitizeAgentName("subleader", input.goalId);
   adapter.agentStart(name, "pi", ref.paneId);
   adapter.agentPrompt(
     ref.paneId,
