@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createOrchestrator, type OrchestratorPorts } from "../../pi/extensions/agentdev/orchestrator";
+import { createOrchestrator, parseLeaderPlanOutput, type OrchestratorPorts } from "../../pi/extensions/agentdev/orchestrator";
 import { detectCodebase } from "../../pi/extensions/agentdev/map-codebase";
 import { extractGlossary } from "../../pi/extensions/agentdev/define-language";
 import { planToStories } from "../../pi/extensions/agentdev/dispatch";
@@ -79,12 +79,46 @@ describe("map-codebase (AC-MANUAL-1)", () => {
 });
 
 describe("define-language (AC-MANUAL-3)", () => {
-  it("extracts a deterministic glossary from the goal", () => {
+  it("extracts acronyms and identifiers, not sentence words", () => {
     const glossary = extractGlossary("Build a REST API for Task Tracking with auth");
     const terms = glossary.map((g) => g.term);
     expect(terms).toContain("REST");
-    expect(terms).toContain("Task");
+    expect(terms).toContain("API");
+    // sentence-capitalized single words are NOT domain terms
+    expect(terms).not.toContain("Task");
+    expect(terms).not.toContain("Tracking");
     expect(terms.length).toBeLessThanOrEqual(8);
+  });
+
+  it("prefers backticked tokens from real briefs and drops stopwords", () => {
+    const glossary = extractGlossary(
+      "I want a backup tool called `snap` — `snap take` stores files by `sha256`; `snap restore` brings them back",
+    );
+    const terms = glossary.map((g) => g.term);
+    expect(terms).toContain("snap");
+    expect(terms).toContain("sha256");
+    expect(terms).not.toContain("back");
+    expect(terms.length).toBeLessThanOrEqual(8);
+  });
+});
+
+describe("parseLeaderPlanOutput (AC-LEADER-1)", () => {
+  it("parses a fenced json block from the leader's reply", () => {
+    const out = parseLeaderPlanOutput(`Here is my plan:\n\n\`\`\`json\n${APPROVED_PLAN_JSON}\n\`\`\``);
+    expect(out?.adr.decision).toBe("typescript CLI");
+    expect(out?.acceptanceCriteria.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("parses a bare JSON object and prose-embedded blocks", () => {
+    expect(parseLeaderPlanOutput(APPROVED_PLAN_JSON)?.adr.decision).toBe("typescript CLI");
+    expect(parseLeaderPlanOutput(`some prose ${APPROVED_PLAN_JSON} trailing` )?.adr.decision).toBe(
+      "typescript CLI",
+    );
+  });
+
+  it("returns null for non-plan replies (consensus fallback)", () => {
+    expect(parseLeaderPlanOutput("I will handle this goal for you.")).toBeNull();
+    expect(parseLeaderPlanOutput("")).toBeNull();
   });
 });
 
@@ -243,6 +277,73 @@ describe("orchestrator (AC-DOD-1): full pipeline with recorded agents", () => {
     const run = await orch.start("commit me");
     expect(run.step).toBe("done");
     expect(confirmed).toBe(true);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("leader plan handoff: skips consensus and dispatches the leader's plan", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-leader-"));
+    const asks: string[] = [];
+    const base = fakePorts();
+    const orch = createOrchestrator(
+      {
+        ...base,
+        ask(prompt) {
+          asks.push(prompt);
+          return base.ask(prompt);
+        },
+      },
+      { cwd, createWorktree: fakeWorktree, git: fakeGit, waitForLeaderPlan: true },
+    );
+    const pending = orch.start("leader-planned goal");
+    // the interactive turn's plan arrives via the agent_end capture hook
+    orch.acceptLeaderPlanForLatest(PLAN);
+    const run = await pending;
+    expect(run.step).toBe("done");
+    expect(run.plan?.adr.decision).toBe("typescript CLI");
+    // consensus roles never ran — the leader's plan was used directly
+    expect(asks.some((a) => /Planner in a consensus-planning loop/.test(a))).toBe(false);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("no leader plan within the timeout → consensus fallback", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-leader-timeout-"));
+    const asks: string[] = [];
+    const base = fakePorts();
+    const orch = createOrchestrator(
+      {
+        ...base,
+        ask(prompt) {
+          asks.push(prompt);
+          return base.ask(prompt);
+        },
+      },
+      { cwd, createWorktree: fakeWorktree, git: fakeGit, waitForLeaderPlan: true, leaderPlanTimeoutMs: 60 },
+    );
+    const run = await orch.start("timeout goal");
+    expect(run.step).toBe("done");
+    expect(asks.some((a) => /Planner in a consensus-planning loop/.test(a))).toBe(true);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("unparseable leader plan → consensus fallback runs the ralplan loop", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-leader-bad-"));
+    const asks: string[] = [];
+    const base = fakePorts();
+    const orch = createOrchestrator(
+      {
+        ...base,
+        ask(prompt) {
+          asks.push(prompt);
+          return base.ask(prompt);
+        },
+      },
+      { cwd, createWorktree: fakeWorktree, git: fakeGit, waitForLeaderPlan: true },
+    );
+    const pending = orch.start("bad leader plan");
+    orch.acceptLeaderPlanForLatest(null); // leader produced no plan
+    const run = await pending;
+    expect(run.step).toBe("done");
+    expect(asks.some((a) => /Planner in a consensus-planning loop/.test(a))).toBe(true);
     rmSync(cwd, { recursive: true, force: true });
   });
 });

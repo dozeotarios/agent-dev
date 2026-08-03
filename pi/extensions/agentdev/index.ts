@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { Type } from "typebox";
 import { parseToggleArg, createToggleState, type ToggleState } from "./toggle";
 import { createGoalRegistry, type GoalRegistry } from "./goals";
-import { createOrchestrator } from "./orchestrator";
+import { createOrchestrator, parseLeaderPlanOutput } from "./orchestrator";
 import { createRealPorts } from "./real-ports";
 import { createHerdrAdapter } from "./backend-adapter";
 
@@ -28,6 +28,51 @@ const SKILL_PATHS = [
   "/pi/skills/define-constraints",
   "/pi/skills/define-language",
 ];
+
+/**
+ * Leader-planning prompt (AC-LEADER-1): with the crew ON, the interactive
+ * turn IS the Leader. It plans; the plan JSON is captured on agent_end and
+ * handed to the Subleader, whose workers build/verify/review and report back.
+ */
+const LEADER_PLAN_PROMPT = `You are the Leader of an agent crew. The user's message is a GOAL for your crew to build.
+
+Your job is PLANNING. Think the goal through, then emit the plan as ONE JSON object inside a single \`\`\`json code block — nothing else outside the block:
+
+{
+  "principles": [3-5 strings],
+  "drivers": [exactly 3 strings],
+  "options": [ {"name": string, "pros": [strings], "cons": [strings]} x at least 2 ],
+  "adr": { "decision": string, "drivers": [strings], "alternatives": [strings], "why": string, "consequences": [strings], "followups": [strings] },
+  "acceptanceCriteria": [at least 3 testable strings]
+}
+
+Rules:
+- acceptanceCriteria must be concrete, testable statements.
+- Do NOT use tools, do NOT execute anything, do NOT write code — plan only.
+- Your crew builds and verifies from this JSON; nothing else in your reply is used.`;
+
+/** Last assistant text from an agent_end message list (string or blocks). */
+function lastAssistantText(messages: { role?: string; content?: unknown }[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || m.role !== "assistant") continue;
+    const c = m.content;
+    if (typeof c === "string") return c;
+    if (Array.isArray(c)) {
+      return c
+        .map((b) =>
+          typeof b === "string"
+            ? b
+            : typeof b === "object" && b !== null && "text" in b
+              ? String((b as { text?: unknown }).text ?? "")
+              : "",
+        )
+        .join("");
+    }
+    return "";
+  }
+  return "";
+}
 
 export interface AgentdevExtension {
   toggle: ToggleState;
@@ -84,15 +129,14 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
         console.log(`[agentdev] ${level ?? "info"}: ${message}`);
       },
       select: async <T extends string>(
-        title: string,
+        _title: string,
         options: { value: T; label: string }[],
       ): Promise<T> => {
-        // headless-safe default: first option (operator interactivity is
-        // provided by the /agentdev commands in the TUI)
-        console.log(`[agentdev] select: ${title} → ${options[0]?.label}`);
+        // SILENT headless default: first option. The interview questions are
+        // not useful in the transcript; stepManual reports one summary line.
         return options[0]!.value;
       },
-      input: async (_title: string, placeholder?: string) => placeholder ?? "",
+      input: async (_title: string, _placeholder?: string) => "",
     };
     const ports = createRealPorts({
       ui,
@@ -103,7 +147,7 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
     ports.adapter = adapter;
     orch =
       opts.makeOrchestrator?.(ports, process.cwd()) ??
-      createOrchestrator(ports, { cwd: process.cwd() });
+      createOrchestrator(ports, { cwd: process.cwd(), waitForLeaderPlan: true });
     return orch;
   };
 
@@ -191,6 +235,23 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
             console.error(`[agentdev] goal pipeline failed: ${e instanceof Error ? e.message : String(e)}`);
           });
         });
+        // The interactive turn is the LEADER planning turn (AC-LEADER-1): its
+        // plan JSON is captured on agent_end and handed to the crew.
+        return {
+          systemPrompt: `${event.systemPrompt}\n\n${LEADER_PLAN_PROMPT}`,
+        };
+      });
+
+      // Leader handoff capture: the interactive turn produced the plan.
+      pi.on("agent_end", (event) => {
+        if (!toggle.isOn() || !orch) return;
+        const messages = (event as { messages?: { role?: string; content?: unknown }[] }).messages ?? [];
+        const text = lastAssistantText(messages);
+        const plan = parseLeaderPlanOutput(text);
+        if (!plan) {
+          console.log(`[agentdev] leader turn did not produce a plan — consensus fallback`);
+        }
+        orch.acceptLeaderPlanForLatest(plan);
       });
 
       // AC-INSTALL-1: expose the manual-phase skills to pi.

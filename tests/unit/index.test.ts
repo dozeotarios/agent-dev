@@ -33,6 +33,7 @@ function loadExtension(cwd?: string) {
   };
   // Fake orchestrator: records goals, resolves immediately (no real agents).
   const started: string[] = [];
+  const leaderPlans: unknown[] = [];
   const fakeOrch = {
     start: async (g: string) => {
       started.push(g);
@@ -41,6 +42,9 @@ function loadExtension(cwd?: string) {
     all: () => [],
     status: () => null,
     resumeAll: async () => [],
+    acceptLeaderPlanForLatest: (plan: unknown) => {
+      leaderPlans.push(plan);
+    },
   };
   const ext = createAgentdevExtension({
     makeOrchestrator: () => fakeOrch as never,
@@ -48,7 +52,7 @@ function loadExtension(cwd?: string) {
   });
   ext.register(pi as never);
   const ctx = { ui: { notify } };
-  return { commands, hooks, tools, notify, ctx, ext, started };
+  return { commands, hooks, tools, notify, ctx, ext, started, leaderPlans };
 }
 
 describe("extension entry — index.ts (wiring)", () => {
@@ -102,6 +106,54 @@ describe("extension entry — index.ts (wiring)", () => {
   it("registers the before_agent_start hook (goal entry point)", () => {
     const { hooks } = loadExtension();
     expect(hooks.has("before_agent_start")).toBe(true);
+  });
+
+  it("the interactive turn is the LEADER planning turn (AC-LEADER-1)", () => {
+    const { hooks, ctx, commands, ext } = loadExtension();
+    void commands.get("agentdev")!.handler("on", ctx);
+    expect(ext.toggle.isOn()).toBe(true);
+    const result = hooks.get("before_agent_start")!({ prompt: "build a todo app" }) as {
+      systemPrompt: string;
+    };
+    expect(result.systemPrompt).toContain("You are the Leader");
+    expect(result.systemPrompt).toContain("acceptanceCriteria");
+  });
+
+  it("agent_end captures the leader's plan and hands it to the crew", async () => {
+    const { hooks, ctx, commands, leaderPlans } = loadExtension();
+    await commands.get("agentdev")!.handler("on", ctx);
+    const planJson = JSON.stringify({
+      principles: ["p1", "p2"],
+      drivers: ["d1", "d2", "d3"],
+      options: [{ name: "a", pros: ["x"], cons: ["y"] }],
+      adr: {
+        decision: "build it",
+        drivers: ["d1"],
+        alternatives: ["b"],
+        why: "why",
+        consequences: ["c"],
+        followups: ["f"],
+      },
+      acceptanceCriteria: ["c1", "c2", "c3"],
+    });
+    hooks.get("agent_end")!({ messages: [{ role: "assistant", content: `\`\`\`json\n${planJson}\n\`\`\`` }] } as never);
+    expect(leaderPlans).toHaveLength(1);
+    const plan = leaderPlans[0] as { adr: { decision: string } };
+    expect(plan.adr.decision).toBe("build it");
+  });
+
+  it("agent_end with no plan-shaped reply hands null (consensus fallback)", async () => {
+    const { hooks, ctx, commands, leaderPlans } = loadExtension();
+    await commands.get("agentdev")!.handler("on", ctx);
+    hooks.get("agent_end")!({ messages: [{ role: "assistant", content: "sure, on it" }] } as never);
+    expect(leaderPlans).toEqual([null]);
+  });
+
+  it("agent_end is ignored when OFF (plain pi)", async () => {
+    const { hooks, ctx, commands, leaderPlans } = loadExtension();
+    await commands.get("agentdev")!.handler("off", ctx);
+    hooks.get("agent_end")!({ messages: [{ role: "assistant", content: "anything" }] } as never);
+    expect(leaderPlans).toHaveLength(0);
   });
 
   it("registers resources_discover for skills", () => {

@@ -117,6 +117,10 @@ export interface Orchestrator {
   resume(goalId: string): Promise<GoalRun>;
   resumeAll(): Promise<GoalRun[]>;
   confirm(goalId: string, ok: boolean): void;
+  /** Leader handoff: the interactive turn's plan (or null when unparseable). */
+  acceptLeaderPlan(goalId: string, plan: PlanOutput | null): void;
+  /** Leader handoff without an id (index.ts agent_end → latest live goal). */
+  acceptLeaderPlanForLatest(plan: PlanOutput | null): void;
   status(goalId: string): GoalRun | null;
   all(): GoalRun[];
 }
@@ -149,6 +153,14 @@ export function createOrchestrator(
     createWorktree?: (baseRepo: string, index: number) => string;
     /** Injectable git runner for performCommit (tests); defaults to real git. */
     git?: import("./perform-commit").GitRunner;
+    /**
+     * Leader-planning mode (prod wiring): the pipeline waits for the
+     * interactive turn's plan (acceptLeaderPlan) before dispatch. When
+     * false (tests), consensus planning runs directly.
+     */
+    waitForLeaderPlan?: boolean;
+    /** How long to wait for the leader's plan before falling back to consensus. */
+    leaderPlanTimeoutMs?: number;
   } = {
     cwd: process.cwd(),
     maxWorktrees: 4,
@@ -158,9 +170,17 @@ export function createOrchestrator(
   const maxWorktrees = opts.maxWorktrees ?? 4;
   const baseRepo = opts.baseRepo ?? cwd;
   const createWorktree = opts.createWorktree ?? createRealWorktree;
+  const waitForLeaderPlan = opts.waitForLeaderPlan ?? false;
+  const leaderPlanTimeoutMs = opts.leaderPlanTimeoutMs ?? 480_000;
   const gitRunner = opts.git;
   const tracker = createEscalationTracker(createEscalationPolicy({ maxRetries: 3, maxReviewRounds: 5 }));
   const runs = new Map<string, GoalRun>();
+  /** Goals started this session (live leader turns can hand plans to them). */
+  const liveGoals = new Set<string>();
+  /** Pending leader-plan waits, keyed by goalId (AC-LEADER-1 handoff). */
+  const leaderWaiters = new Map<string, { resolve: (plan: PlanOutput | null) => void; timer: NodeJS.Timeout }>();
+  /** Plan that arrived before its waiter registered (races) — consumed next. */
+  let bufferedLeaderPlan: { plan: PlanOutput | null } | null = null;
 
   const loadPersisted = (goalId: string): PersistedGoal | null =>
     readJson<PersistedGoal>(stateFile(goalDir(cwd, goalId)));
@@ -250,6 +270,14 @@ export function createOrchestrator(
     if (glossary.length > 0) {
       ports.notify(`agentdev: glossary ${glossary.map((g) => g.term).join(", ")}`);
     }
+    const constraintCount =
+      p.constraints.failureModes.length +
+      p.constraints.edgeCases.length +
+      p.constraints.invariants.length +
+      p.constraints.mustNots.length;
+    ports.notify(
+      `agentdev: manual done — stack=${p.stack ?? "?"} mode=${p.mode} constraints=${constraintCount}`,
+    );
     p.step = "consensus";
     persist(p);
   }
@@ -257,6 +285,38 @@ export function createOrchestrator(
   async function stepConsensus(p: PersistedGoal): Promise<void> {
     if (p.step !== "consensus") return;
     const deliberate = isHighRisk(p.goalText, []);
+    // Leader handoff (AC-LEADER-1): in prod wiring the interactive turn IS the
+    // planning step. Accept its plan and skip the headless consensus loop;
+    // timeout or unparseable output falls back to consensus.
+    if (waitForLeaderPlan && liveGoals.has(p.goalId)) {
+      const leaderPlan = await new Promise<PlanOutput | null>((resolve) => {
+        const buffered = bufferedLeaderPlan;
+        if (buffered) {
+          bufferedLeaderPlan = null;
+          resolve(buffered.plan);
+          return;
+        }
+        const timer = setTimeout(() => {
+          leaderWaiters.delete(p.goalId);
+          resolve(null);
+        }, leaderPlanTimeoutMs);
+        leaderWaiters.set(p.goalId, { resolve, timer });
+      });
+      if (leaderPlan && validatePlanOutput(leaderPlan, { deliberate }).ok) {
+        p.plan = leaderPlan;
+        p.approved = true;
+        p.step = "dispatch";
+        persist(p);
+        ports.notify(`agentdev: leader plan approved (${p.goalId}) — handing off to subleader`);
+        return;
+      }
+      ports.notify(
+        leaderPlan
+          ? `agentdev: leader plan failed validation — running consensus planning`
+          : `agentdev: no leader plan (timeout) — running consensus planning`,
+        "warning",
+      );
+    }
     const loop = createConsensusLoop();
     let planOutput: PlanOutput | null = null;
     let lastCritique = "";
@@ -409,6 +469,12 @@ export function createOrchestrator(
       round += 1;
     }
     if (!loop.isComplete()) throw new Error("review loop did not terminate");
+    // Subleader → Leader report (AC-LEADER-2): a factual brief of what the
+    // crew built and verified, surfaced in the interactive session.
+    const workers = loadWorkers(cwd, p);
+    ports.notify(
+      `agentdev: SUBLEADER REPORT (${p.goalId}) — ${workers.length} story${workers.length === 1 ? "" : "s"} built & verified; review clean after ${round - 1} round${round - 1 === 1 ? "" : "s"}; commit-ready at the gate — /agentdev confirm ${p.goalId}`,
+    );
     p.step = "gate";
     persist(p);
   }
@@ -495,8 +561,29 @@ export function createOrchestrator(
         storyCriteria: {},
         gate: null,
       };
+      liveGoals.add(goalId); // the interactive leader turn will hand its plan
       persist(p, []);
       return runPipeline(p);
+    },
+
+    acceptLeaderPlan(goalId: string, plan: PlanOutput | null): void {
+      const waiter = leaderWaiters.get(goalId);
+      if (!waiter) return; // no wait (consensus already running / not waiting)
+      clearTimeout(waiter.timer);
+      leaderWaiters.delete(goalId);
+      waiter.resolve(plan);
+    },
+
+    acceptLeaderPlanForLatest(plan: PlanOutput | null): void {
+      const entries = [...leaderWaiters.entries()];
+      if (entries.length === 0) {
+        bufferedLeaderPlan = { plan }; // consumed by the next waiter (race)
+        return;
+      }
+      const [goalId, waiter] = entries[entries.length - 1]; // serial turns → latest
+      clearTimeout(waiter.timer);
+      leaderWaiters.delete(goalId);
+      waiter.resolve(plan);
     },
 
     async resume(goalId: string): Promise<GoalRun> {
@@ -571,6 +658,29 @@ function parsePlanOutput(json: string): PlanOutput | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Parse the leader's interactive turn output into a plan. Lenient: accepts
+ * a ```json fence, a bare JSON object, or a JSON block embedded in prose.
+ * Returns null when no plan-shaped JSON is found (→ consensus fallback).
+ */
+export function parseLeaderPlanOutput(text: string): PlanOutput | null {
+  if (!text) return null;
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const candidates = [fence ? fence[1] : null, text].filter((c): c is string => c !== null);
+  for (const c of candidates) {
+    const trimmed = c.trim();
+    const direct = parsePlanOutput(trimmed);
+    if (direct) return direct;
+    const s = trimmed.indexOf("{");
+    const e = trimmed.lastIndexOf("}");
+    if (s >= 0 && e > s) {
+      const slice = parsePlanOutput(trimmed.slice(s, e + 1));
+      if (slice) return slice;
+    }
+  }
+  return null;
 }
 
 function criticVerdict(text: string): "approve" | "iterate" | "reject" {
