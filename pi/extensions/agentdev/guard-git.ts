@@ -68,12 +68,12 @@ const RULES: DestructiveRule[] = [
   { verb: "reset", flags: ["--hard", "--soft", "--mixed"], reason: "git reset (history/worktree rewrite)" },
   { verb: "reset", rootPathspec: true, reason: "git reset <pathspec>" },
   { verb: "clean", flags: ["--force"], short: "fdx", reason: "git clean -f" },
-  { verb: "push", flags: ["--force"], short: "f", reason: "force push" },
+  { verb: "push", flags: ["--force", "--force-with-lease"], short: "f", reason: "force push" },
   { verb: "branch", flags: ["--delete"], short: "D", reason: "branch -D" },
   { verb: "checkout", rootPathspec: true, reason: "checkout <root pathspec> (discards work)" },
   { verb: "restore", rootPathspec: true, reason: "restore <root pathspec> (discards work)" },
   { verb: "rm", rootPathspec: true, reason: "git rm (deletes files)" },
-  { verb: "rebase", flags: ["--onto", "--root"], reason: "destructive rebase" },
+  { verb: "rebase", flags: ["--onto", "--root", "--interactive"], short: "i", reason: "destructive rebase" },
   { verb: null, anyOf: ["rm -rf", "rm -r ", "rm -fr"], reason: "rm -r (deletes files)" },
 ];
 

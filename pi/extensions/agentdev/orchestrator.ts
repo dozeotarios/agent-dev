@@ -732,6 +732,17 @@ export function createOrchestrator(
       }
       await ports.teardownWorker(fix);
     }
+    // INTEGRITY GATE: the merge only carries COMMITTED work — any uncommitted
+    // leftovers in a worker's worktree would silently vanish from the
+    // deliverable. Fail loudly instead of losing the story.
+    for (const w of workers) {
+      const leftovers = porcelainOf(w.worktreePath).trim();
+      if (leftovers.length > 0) {
+        throw new Error(
+          `worker ${w.storyId} left uncommitted changes in its worktree — not merged (worktree open for inspection)`,
+        );
+      }
+    }
     p.stagingWorktree = staging;
     p.step = "review";
     persist(p);
@@ -956,7 +967,12 @@ export function createOrchestrator(
     acceptLeaderPlanForLatest(plan: PlanOutput | null, stack: string | null = null): void {
       const entries = [...leaderWaiters.entries()];
       if (entries.length === 0) {
-        bufferedHandoff = { plan, stack }; // consumed by the next waiter (race)
+        // A follow-up agent_end (tool-loop continuation) delivers null with no
+        // waiter pending — buffering it would poison the NEXT goal's waiter
+        // (stale "no plan" consumed instead of waiting for its own plan).
+        if (plan !== null || stack !== null) {
+          bufferedHandoff = { plan, stack }; // consumed by the next waiter (race)
+        }
         return;
       }
       const [goalId, waiter] = entries[entries.length - 1]; // serial turns → latest

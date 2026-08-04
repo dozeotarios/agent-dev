@@ -457,6 +457,68 @@ describe("orchestrator (AC-DOD-1): full pipeline with recorded agents", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
+  it("stale null agent_end (follow-up turn) never poisons the next goal's plan", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-nullpoison-"));
+    const asks: string[] = [];
+    const base = fakePorts();
+    const orch = createOrchestrator(
+      {
+        ...base,
+        ask(prompt) {
+          asks.push(prompt);
+          return base.ask(prompt);
+        },
+      },
+      { cwd, createWorktree: fakeWorktree, git: fakeGit, waitForLeaderPlan: true },
+    );
+    const pending = orch.start("no poison goal");
+    // real plan arrives, THEN a follow-up agent_end delivers null (tool loop)
+    orch.acceptLeaderPlanForLatest(PLAN);
+    orch.acceptLeaderPlanForLatest(null);
+    const run = await pending;
+    expect(run.step).toBe("done");
+    expect(run.plan?.adr.decision).toBe("typescript CLI");
+    // the null was ignored — the planner was never asked (plan used, no fallback)
+    expect(asks.some((a) => /Planner in a consensus-planning loop/.test(a))).toBe(false);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("uncommitted worker leftovers fail the goal instead of vanishing at merge", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-leftovers-"));
+    const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
+    const fs = require("node:fs") as typeof import("node:fs");
+    const { writeFileSync } = fs;
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd });
+    execFileSync("git", ["config", "user.name", "t"], { cwd });
+    fs.writeFileSync(join(cwd, "seed.txt"), "seed");
+    execFileSync("git", ["add", "-A"], { cwd });
+    execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd });
+    const wt = join(cwd, "wt");
+    fs.mkdirSync(wt, { recursive: true });
+    execFileSync("git", ["-C", cwd, "worktree", "add", wt, "-b", "agentdev-story-1"], { stdio: "ignore" });
+    fs.writeFileSync(join(wt, "work.txt"), "committed work");
+    execFileSync("git", ["-C", wt, "add", "-A"], { stdio: "ignore" });
+    execFileSync("git", ["-C", wt, "commit", "-q", "-m", "feat(story-1): work"], { stdio: "ignore" });
+    // the worker left an UNCOMMITTED extra file behind
+    fs.writeFileSync(join(wt, "leftover.txt"), "oops");
+    const orch = createOrchestrator(
+      fakePorts({
+        spawnWorker: (ctx) => ({
+          goalId: ctx.goalId, storyId: ctx.storyId, worktree: ctx.worktree,
+          paneId: "p", workspaceId: "w", name: "n", reportPath: "",
+        }),
+        waitForWorker: () => "done",
+        teardownWorker: () => undefined,
+      }),
+      { cwd, createWorktree: () => wt, git: fakeGit },
+    );
+    const run = await orch.start("leftovers goal");
+    expect(run.step).toBe("failed");
+    expect(run.errors.join(" ")).toMatch(/uncommitted changes/);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
   it("skipConsensus: operator opt-out skips the whole loop", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-skip-"));
     const asks: string[] = [];
@@ -549,6 +611,9 @@ describe("orchestrator (AC-DOD-1): full pipeline with recorded agents", () => {
       { cwd, createWorktree: fakeWorktree, git: fakeGit, waitForLeaderPlan: true },
     );
     const pending = orch.start("bad leader plan");
+    // deliver the null AFTER the pipeline registered its waiter (the real
+    // agent_end fires when the turn ends, long after the wait begins)
+    await new Promise((r) => setTimeout(r, 100));
     orch.acceptLeaderPlanForLatest(null); // leader produced no plan
     const run = await pending;
     expect(run.step).toBe("done");
