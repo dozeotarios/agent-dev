@@ -16,7 +16,7 @@ A feature is not "done" until its tests exist and pass.
 **When tests are written (TDD-first; tests-after allowed):**
 - **Test-first (TDD: red → green → refactor)** for any feature with deterministic logic
   (state machines, parsers, command builders, loop termination, policies). Write the
-  failing test, implement until green, refactor. (bigpowers `develop-tdd` + `enforce-first`.)
+  failing test, implement until green, refactor. (the methodology library `develop-tdd` + `enforce-first`.)
 - **Tests-after** is acceptable for integration glue and E2E flows where test-first is
   impractical — but the test must still exist before the feature is declared done.
 
@@ -27,11 +27,11 @@ A feature is not "done" until its tests exist and pass.
 | Layer | What's tested | How | Speed |
 |---|---|---|---|
 | **Code (unit)** | our deterministic logic (no herdr, no LLM) | vitest + mocked deps, **TDD-first** | fast, every save |
-| **Framework (integration)** | correct use of pi / herdr / pi-subagents / bigpowers APIs | vitest + real herdr + pi loader; contract tests | medium, pre-merge |
+| **Framework (integration)** | correct use of pi / herdr / pi-subagents / the methodology library APIs | vitest + real herdr + pi loader; contract tests | medium, pre-merge |
 | **Agentic (eval)** | LLM behavior (manual phase, ralplan, reviewers, subworkers) | **evals**: rubric graders + structural asserts + pass@k; fixture/recorded agents | scheduled (cost) |
 | **E2E** | full goal → commit-ready pipeline (AC-DOD-1) | real herdr + real agents | slow, nightly / release |
 
-**Agentic features are eval-driven** (bigpowers `run-evals`): define the capability eval +
+**Agentic features are eval-driven** (the methodology library `run-evals`): define the capability eval +
 grader *before* building; deterministic graders run `verify` commands, model graders use
 explicit rubrics; pass@k logged; fixtures/recordings for regression.
 

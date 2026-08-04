@@ -35,7 +35,7 @@ When running alongside `audit-code`, use isolated worktrees so scans do not race
 bash scripts/lib/parallel-review-worktrees.sh security-review
 ```
 
-Each check gets a detached worktree at `.bigpowers/worktrees/review-<name>/`; reports still write only under `specs/security/`.
+Each check gets a detached worktree at `.agentdev/worktrees/review-<name>/`; reports still write only under `specs/security/`.
 
 ## 5-phase scan
 

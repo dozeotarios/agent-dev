@@ -86,7 +86,7 @@ export interface OrchestratorPorts {
    *  the pi session stays interactive while the crew runs. */
   ask(prompt: string, timeoutMs?: number): string | Promise<string>;
   /**
-   * CREW PORTS (firstmate-style spawning): Subleader + Subworkers are real
+   * CREW PORTS (agentdev-style spawning): Subleader + Subworkers are real
    * herdr panes hosting live pi sessions, briefed from disk/chat and
    * supervised by report files + herdr agent state.
    */
@@ -95,7 +95,7 @@ export interface OrchestratorPorts {
     w: CrewWorker,
     opts?: { timeoutMs?: number; onStuck?: (minutes: number) => void },
   ): CrewOutcome | Promise<CrewOutcome>;
-  /** Steering (firstmate model): guidance into the worker's live pane. */
+  /** Steering (the reference model model): guidance into the worker's live pane. */
   steerWorker(w: CrewWorker, text: string): void | Promise<void>;
   /** keepOpen=true leaves the pane up for inspection (fail-closed teardown). */
   teardownWorker(w: CrewWorker, keepOpen?: boolean): void | Promise<void>;
@@ -167,7 +167,7 @@ export interface Orchestrator {
 }
 
 /**
- * PROJECTS BOARD (firstmate bearings-snapshot): one bounded line per active
+ * PROJECTS BOARD (the reference model bearings-snapshot): one bounded line per active
  * goal — id, project text, step, story count, last report headline. Injected
  * into the leader's system prompt each turn so it holds context of ALL its
  * projects without transcripts (context cost = O(goals), not O(conversation)).
@@ -443,7 +443,7 @@ export function createOrchestrator(
       planner: (hint) =>
         `You are the Planner in a consensus-planning loop. ${goalLineOf()}Emit ONLY JSON: ${PLANNER_JSON_SCHEMA}. No prose. ${FILE_PLAN_INSPECT}${hint}`,
       architect: (hint) =>
-        `You are the Architect in a consensus-planning loop (oh-my-claudecode style). Review the plan for architectural soundness. NEVER rubber-stamp the favored direction: give the strongest steelman ANTITHESIS, at least one real TRADEOFF TENSION, and a SYNTHESIS when feasible. Reply: "SOUND" or "NEEDS WORK" first line, then ANTITHESIS:/TRADEOFF:/SYNTHESIS: lines (concrete, short).${hint}`,
+        `You are the Architect in a consensus-planning loop (steelman-antithesis style). Review the plan for architectural soundness. NEVER rubber-stamp the favored direction: give the strongest steelman ANTITHESIS, at least one real TRADEOFF TENSION, and a SYNTHESIS when feasible. Reply: "SOUND" or "NEEDS WORK" first line, then ANTITHESIS:/TRADEOFF:/SYNTHESIS: lines (concrete, short).${hint}`,
       developer: (hint) =>
         `You are the Developer in a consensus-planning loop. Review the plan for PRACTICAL FEASIBILITY, EFFICIENCY (smallest plan that satisfies the criteria — no gold-plating, no over-engineering) and RELIABILITY (error handling, edge cases, failure modes covered). Reply: "FEASIBLE" or "RISKY" first line, then EFFICIENCY:/RELIABILITY:/RISK: lines (concrete, short).${hint}`,
       critic: (hint) =>
@@ -555,7 +555,7 @@ export function createOrchestrator(
       for (const w of result.workers) {
         f.addNode({ id: w.storyId, role: "subworker", path: `${p.goalId}/plan/${w.storyId}`, status: "working", paneId: null });
       }
-      // SPAWN THE SUBLEADER (firstmate-style): a real pane hosting the plan.
+      // SPAWN THE SUBLEADER (crew-style): a real pane hosting the plan.
       try {
         const sub = await ports.spawnSubleader({
           goalId: p.goalId,
@@ -610,7 +610,7 @@ export function createOrchestrator(
           ports.notify(`agentdev: ${w.storyId} worker silent ${min} min — status check`, "warning"),
       });
       if (outcome !== "done") {
-        // STEERING first (firstmate stuck-crewmate-recovery): a blocked worker
+        // STEERING first (stuck-crewmate recovery): a blocked worker
         // with committed work gets guidance INTO its live pane — same worktree,
         // same brief contract — up to 2 steers. Only then does it escalate.
         const hasWork = worktreeHasWork(w.worktreePath, baseRepo);

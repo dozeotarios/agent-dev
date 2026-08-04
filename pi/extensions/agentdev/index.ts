@@ -86,7 +86,7 @@ Rules:
 };
 
 /**
- * Interactive manual interview (bigpowers manual phase: choose-stack →
+ * Interactive manual interview (the methodology library manual phase: choose-stack →
  * define-constraints → project mode). Runs INSIDE before_agent_start so pi
  * waits and the dialogs appear before the Leader turn plans. Timeouts fall
  * back to defaults (stack: first candidate, constraints: none, mode:
@@ -94,7 +94,7 @@ Rules:
  */
 /**
  * Constraint-candidate suggester: the LLM thinks about THIS goal and proposes
- * project-grounded candidates per category (bigpowers define-constraints style).
+ * project-grounded candidates per category (the define-constraints style).
  * Deterministic generateCandidates is only the fallback.
  */
 export type ConstraintSuggester = (

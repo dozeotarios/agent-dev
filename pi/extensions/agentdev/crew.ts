@@ -1,13 +1,13 @@
 /**
  * agentdev-crew (AC-CREW-1..5) — spawn and supervise REAL crew members,
- * modeled on firstmate (github.com/kunchenguid/firstmate): every Subworker
+ * modeled on the crew reference model: every Subworker
  * and the Subleader get their own herdr pane hosting a live pi session, a
  * brief submitted as their first message, on-disk report files, and
  * fail-closed teardown. The leader's orchestrator supervises by polling
  * report files + herdr agent state — never by blocking child processes.
  *
  * Naming: agentdev-* (Subleader → `S:`, Subworker → `W:`, roles from
- * roles.ts). Worktrees come from the orchestrator's pool (firstmate uses
+ * roles.ts). Worktrees come from the orchestrator's pool (the reference model uses
  * treehouse; agentdev uses its own worktree pool).
  */
 
@@ -71,7 +71,7 @@ export function uniqueAgentName(prefix: string, id: string): string {
   return `${base.slice(0, 27)}-${suffix}`;
 }
 
-/** STEERING (firstmate stuck-crewmate-recovery): guidance into the worker's
+/** STEERING (stuck-crewmate recovery): guidance into the worker's
  *  live pane — same worktree, same brief contract, new turn. */
 export function steerWorker(adapter: BackendAdapter, w: CrewWorker, guidance: string): void {
   adapter.agentPrompt(
@@ -113,7 +113,7 @@ function readFileSafe(path: string): string | null {
 }
 
 /**
- * The worker's brief (agentdev-build): the intake contract firstmate-style —
+ * The worker's brief (agentdev-build): the intake contract agentdev-style —
  * goal, story, acceptance criteria, boundaries, and the REPORT contract.
  */
 export function crewBrief(input: CrewBriefInput): string {
@@ -229,7 +229,7 @@ export async function waitForWorker(
   let doneStreak = 0;
   let stuckNotified = false;
   while (Date.now() < deadline) {
-    // WATCHDOG (oh-my-claudecode policy): 5 min silent → status check
+    // WATCHDOG (stuck-worker policy): 5 min silent → status check
     const elapsedMin = (Date.now() - (deadline - timeoutMs)) / 60_000;
     if (!stuckNotified && elapsedMin >= 5) {
       stuckNotified = true;

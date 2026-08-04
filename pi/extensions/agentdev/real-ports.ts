@@ -89,7 +89,7 @@ export function createRealPorts(opts: RealPortsOptions): OrchestratorPorts {
       return askPi(prompt, timeoutMs ?? 300_000, piBin);
     },
     async buildStory(ctx) {
-      // CREW-BACKED (firstmate-style): spawn a real worker pane, supervise it
+      // CREW-BACKED (agentdev-style): spawn a real worker pane, supervise it
       // to its report, teardown when green. Failures keep their pane open.
       const worker = crewSpawnWorker(ports.adapter, ctx, { cwd: process.cwd() });
       const outcome = await crewWaitForWorker(ports.adapter, worker);

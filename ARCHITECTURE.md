@@ -38,7 +38,7 @@
 
 **Non-goals (v1)**
 - Arbitrary N-level recursion (3 tiers now).
-- A custom ML plan slicer (reuse bigpowers).
+- A custom ML plan slicer (reuse the methodology library).
 - Cost/token budgeting.
 - A companion herdr plugin (API-only first).
 - A GUI / web dashboard.
@@ -76,7 +76,7 @@
 
 **Every non-leaf node is an orchestrator; leaves are workers.**
 
-| Role | Type | Owns | bigpowers phase |
+| Role | Type | Owns | the methodology library phase |
 |---|---|---|---|
 | **Leader** | top orchestrator + operator liaison | Discover, Design, Plan, final Integrate | 1–3, 6 |
 | **Subleader** | nested orchestrator | exactly **1 plan / epic**: Initiate → Build → Verify → Review → report | initiate, 5, review |
@@ -119,7 +119,7 @@ The **pre-execution gate** *is* this boundary: no autopilot until scope + constr
 
 1. **`survey/map-codebase`** — detect existing repo vs greenfield. Existing → stack detected and **locked**.
 2. **`choose-stack`** *(greenfield only)* — Leader guides the operator to pick language/stack with rationale (perf, ecosystem, team familiarity, deploy target).
-   - ⚠️ `define-language` (bigpowers) is the **DDD ubiquitous-language glossary**, *not* programming-language selection. Kept separate; also run during Design.
+   - ⚠️ `define-language` (the methodology library) is the **DDD ubiquitous-language glossary**, *not* programming-language selection. Kept separate; also run during Design.
 3. **`define-language`** — DDD glossary (canonical domain terms).
 4. **`define-constraints`** — option-driven risk interview (see §7).
 5. **Pick project mode** — see §11.
@@ -145,7 +145,7 @@ The Leader **surfaces tailored candidates** (pre-filled checklist), the operator
 
 ## 8. ralplan consensus (autopilot entry)
 
-Adopts oh-my-claudecode's consensus technique (steelman antithesis + tradeoff tension from the Architect; gap analysis + self-audit from the Critic), with **Developer** added (feasibility + efficiency + reliability).
+Adopts the reference model's consensus technique (steelman antithesis + tradeoff tension from the Architect; gap analysis + self-audit from the Critic), with **Developer** added (feasibility + efficiency + reliability).
 
 ```
 Planner (drafts plan + RALPLAN-DR summary)
@@ -272,7 +272,7 @@ project/.agentdev/
 
 - All orchestration state is on disk (`.agentdev/`).
 - herdr keeps panes/PTYs alive when the terminal or Leader process dies.
-- On restart, agentdev **reconnects to existing panes** and **resumes from on-disk fleet state** — no lost work, no orphan panes (firstmate's model).
+- On restart, agentdev **reconnects to existing panes** and **resumes from on-disk fleet state** — no lost work, no orphan panes (the reference model's model).
 
 ---
 
@@ -357,7 +357,7 @@ Testing is a first-class part of the plan, not an afterthought. Every empiricall
 **Real-environment fidelity (default to real):** prefer the real stack over mocks everywhere except pure deterministic unit logic. Integration tests use the installed herdr + real pi loader; E2E uses real herdr + real (or recorded) agents on real Linux/WSL/Windows. A test that mocks away herdr/pi/OS counts only at the unit layer — never as integration or E2E.
 
 **Test-first policy (TDD):**
-- **Write the test first (red → green → refactor)** for any feature with deterministic logic: state machines (toggle), command builders (BackendAdapter), loop termination (ralplan ≤5), policies (autoclose, git-gate, escalation), serializers (fleet-state), worktree pooling. (bigpowers `develop-tdd` + `enforce-first`.)
+- **Write the test first (red → green → refactor)** for any feature with deterministic logic: state machines (toggle), command builders (BackendAdapter), loop termination (ralplan ≤5), policies (autoclose, git-gate, escalation), serializers (fleet-state), worktree pooling. (the methodology library `develop-tdd` + `enforce-first`.)
 - **Tests-after** is acceptable for integration glue and E2E where test-first is impractical — but the test exists before "done".
 
 **Quality bar:** F.I.R.S.T. (Fast · Independent · Repeatable · Self-validating · Timely).
@@ -367,11 +367,11 @@ Testing is a first-class part of the plan, not an afterthought. Every empiricall
 | Layer | What's under test | How | Determinism |
 |---|---|---|---|
 | **Code (unit)** | our deterministic logic — state machines (toggle), command builders (BackendAdapter), loop bounds (ralplan ≤5), policies (autoclose, git-gate, escalation), serializers (fleet-state), worktree pooling | vitest, mocked deps, **TDD-first** | deterministic |
-| **Framework (integration)** | correct use of the platforms — **pi** (extension lifecycle: event hooks, tool/command registration, session replace/reload, `before_agent_start`), **herdr** (CLI/socket API: workspace/pane/worktree/agent-state/wait), **pi-subagents** (intercom, async), **bigpowers** (skill invocation) | vitest + real herdr + pi loader; contract tests on framework surfaces | deterministic (vs stable APIs) |
+| **Framework (integration)** | correct use of the platforms — **pi** (extension lifecycle: event hooks, tool/command registration, session replace/reload, `before_agent_start`), **herdr** (CLI/socket API: workspace/pane/worktree/agent-state/wait), **pi-subagents** (intercom, async), **the methodology library** (skill invocation) | vitest + real herdr + pi loader; contract tests on framework surfaces | deterministic (vs stable APIs) |
 | **Agentic (eval)** | LLM-driven behavior — Leader manual phase, ralplan consensus quality, reviewer findings validity, subworker code correctness | **evals** (below): rubric graders + structural asserts + pass@k; fixture/recorded agents for regression | non-deterministic → graded |
 | **E2E** | full goal → commit-ready pipeline (AC-DOD-1) | real herdr + real agents | graded |
 
-**Agentic testing (eval-driven; bigpowers `run-evals`):**
+**Agentic testing (eval-driven; the methodology library `run-evals`):**
 - Define the **capability eval + grader before building** each agentic feature (eval-driven development).
 - **Graders:** deterministic graders run `verify` commands (produced code passes the project's tests; plan output contains an ADR + testable criteria; review flags an injected defect); model graders score explicit rubrics (does the review catch X? is the plan sound?).
 - **pass@k** logged for every agentic eval.
@@ -414,7 +414,7 @@ Each phase ships with its tests — **test-first for deterministic logic**. A ph
 
 ## 23. v1 scope vs deferred
 
-**v1:** herdr API-only (no plugin) · herdr-only backend (pluggable interface) · 3-tier hierarchy · bigpowers slicing reuse · restart-proof · Windows/WSL/Linux.
+**v1:** herdr API-only (no plugin) · herdr-only backend (pluggable interface) · 3-tier hierarchy · the methodology library slicing reuse · restart-proof · Windows/WSL/Linux.
 
 **Deferred:** cost/token budgets · arbitrary N-level recursion · custom ML slicer · companion herdr plugin (per-role color) · learned-preferences knowledge base.
 

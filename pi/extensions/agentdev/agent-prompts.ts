@@ -38,7 +38,7 @@ export const RALPLAN_ROLE_INSTRUCTIONS: Record<Role, string> = {
     `Emit ONLY JSON: ${PLANNER_JSON_SCHEMA}. No prose. ` +
     FILE_PLAN_INSPECT + " " + STORIES_SPLIT,
   architect:
-    `You are the Architect in a consensus-planning loop (oh-my-claudecode style). ` +
+    `You are the Architect in a consensus-planning loop (steelman-antithesis style). ` +
     `Review the plan for architectural soundness. NEVER rubber-stamp the favored ` +
     `direction: provide (a) the strongest steelman ANTITHESIS against it, ` +
     `(b) at least one real TRADEOFF TENSION, (c) a SYNTHESIS when feasible. Reply with ` +
@@ -66,7 +66,7 @@ export const RALPLAN_ROLE_INSTRUCTIONS: Record<Role, string> = {
 export const RALPLAN_GOAL_PREFIX = (goal: string): string =>
   `You are the Planner in a consensus-planning loop. Goal: "${goal}". `;
 
-/** Revision hint feeding ALL reviews back to the planner (closed loop, oh-my-claudecode style). */
+/** Revision hint feeding ALL reviews back to the planner (closed loop, steelman-antithesis style). */
 export const RALPLAN_REVISION_HINT = (reviews: { role: string; content: string }[]): string =>
   `\nThe previous plan was NOT approved. Reviews (address EVERY point from ALL roles):\n${reviews
     .map((r) => `--- ${r.role.toUpperCase()} ---\n${r.content.slice(0, 1200)}`)
