@@ -5,11 +5,11 @@ import { Type } from "typebox";
 import { parseToggleArg, createToggleState, type ToggleState } from "./toggle";
 import { createGoalRegistry, type GoalRegistry } from "./goals";
 import { createOrchestrator, parseLeaderPlanOutput, parseLeaderStack } from "./orchestrator";
-import { createRealPorts } from "./real-ports";
+import { createRealPorts, askPi } from "./real-ports";
 import { createHerdrAdapter } from "./backend-adapter";
 import { detectCodebase } from "./map-codebase";
 import { resolveStackSelection } from "./choose-stack";
-import { createInterview, generateCandidates } from "./define-constraints";
+import { createInterview, generateCandidates, CATEGORY_ORDER, type CategoryCandidates } from "./define-constraints";
 
 /**
  * agentdev — the brain (pi extension).
@@ -91,10 +91,52 @@ Rules:
  * back to defaults (stack: first candidate, constraints: none, mode:
  * direct-PR) so unattended runs still proceed.
  */
+/**
+ * Constraint-candidate suggester: the LLM thinks about THIS goal and proposes
+ * project-grounded candidates per category (bigpowers define-constraints style).
+ * Deterministic generateCandidates is only the fallback.
+ */
+export type ConstraintSuggester = (
+  goal: string,
+  ctx: { stack: string | null; existingRepo: boolean },
+) => Promise<CategoryCandidates[]>;
+
+export async function llmSuggestConstraintCandidates(
+  goal: string,
+  ctx: { stack: string | null; existingRepo: boolean },
+): Promise<CategoryCandidates[]> {
+  try {
+    const out = await askPi(
+      `You are running the define-constraints interview for a goal. Read the goal CAREFULLY and think about what THIS SPECIFIC project needs.\n\nGoal: "${goal}"\nStack: ${ctx.stack ?? "undecided"} | Existing repo: ${ctx.existingRepo ? "yes (brownfield)" : "no (greenfield)"}\n\nPropose 4-6 SPECIFIC, project-grounded constraint candidates for EACH of the five categories:\n- do: things the build MUST do\n- dont: things it MUST NOT do\n- failure_modes: ways it could fail in production\n- edge_cases: tricky inputs/situations it must handle\n- invariants: properties that must always hold\n\nThe candidates must derive from THIS goal (its domain, its risks) — not generic boilerplate.\nEmit ONLY JSON: { "do": [...], "dont": [...], "failure_modes": [...], "edge_cases": [...], "invariants": [...] }`,
+      120_000,
+    );
+    const cleaned = out.trim().replace(/^```json\\s*/i, "").replace(/```\\s*$/i, "").trim();
+    const j = JSON.parse(cleaned) as Record<string, unknown>;
+    return CATEGORY_ORDER.map((category) => ({
+      category,
+      items: (Array.isArray(j[category]) ? (j[category] as unknown[]) : [])
+        .map((t, i) => ({
+          id: `${category}-llm-${i + 1}`,
+          text: String(t),
+          appliesWhen: [] as string[],
+        })),
+    }));
+  } catch {
+    // LLM unavailable / unparseable → deterministic knowledge base
+    return generateCandidates({
+      stack: ctx.stack,
+      scope: goal,
+      existingRepo: ctx.existingRepo,
+      riskSignals: [],
+    });
+  }
+}
+
 async function runManualInterview(
   ui: ExtensionUIContext,
   goal: string,
   facts: { existingRepo: boolean; stack: string | null },
+  suggest: ConstraintSuggester = llmSuggestConstraintCandidates,
 ): Promise<Map<string, string>> {
   const answers = new Map<string, string>();
   try {
@@ -111,12 +153,11 @@ async function runManualInterview(
         answers.set("Choose a stack", chosen.id);
       }
     }
-    // define-constraints interview (AC-MANUAL-4/5)
-    const candidates = generateCandidates({
+    // define-constraints interview (AC-MANUAL-4/5) — candidates come from the
+    // LLM thinking about THIS goal; deterministic KB is the fallback
+    const candidates = await suggest(goal, {
       stack: facts.stack ?? "typescript",
-      scope: goal,
       existingRepo: facts.existingRepo,
-      riskSignals: [],
     });
     for (const cat of candidates) {
       const title = `define-constraints: ${cat.category} (select items, or none)`;
@@ -190,6 +231,8 @@ export interface AgentdevExtensionOptions {
     ports: ReturnType<typeof createRealPorts>,
     cwd: string,
   ) => ReturnType<typeof createOrchestrator>;
+  /** Tests inject a deterministic suggester; production = LLM + fallback. */
+  constraintSuggest?: ConstraintSuggester;
   /** Project cwd for toggle persistence (tests pass a tmp dir). */
   cwd?: string;
 }
@@ -363,7 +406,12 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
         // dialogs appear before the Leader turn): choose-stack →
         // define-constraints → project mode. Answers feed the pipeline.
         const facts = detectCodebase(cwd);
-        pendingAnswers = await runManualInterview(ctx.ui, prompt, facts);
+        pendingAnswers = await runManualInterview(
+          ctx.ui,
+          prompt,
+          facts,
+          opts.constraintSuggest ?? llmSuggestConstraintCandidates,
+        );
         const needsResearch = pendingAnswers.get("Choose a stack") === "research";
         const techniquesResearch =
           pendingAnswers.get("Research up-to-date techniques for this goal?") !== "no";

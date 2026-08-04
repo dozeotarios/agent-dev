@@ -49,6 +49,14 @@ function loadExtension(cwd?: string) {
   const ext = createAgentdevExtension({
     makeOrchestrator: () => fakeOrch as never,
     cwd: cwd ?? tmpCwd(),
+    // deterministic constraint candidates — never a real LLM call in tests
+    constraintSuggest: async () => [
+      { category: "do", items: [{ id: "do-1", text: "deterministic do", appliesWhen: [] }] },
+      { category: "dont", items: [{ id: "dont-1", text: "deterministic dont", appliesWhen: [] }] },
+      { category: "failure_modes", items: [{ id: "fm-1", text: "deterministic fm", appliesWhen: [] }] },
+      { category: "edge_cases", items: [{ id: "ec-1", text: "deterministic ec", appliesWhen: [] }] },
+      { category: "invariants", items: [{ id: "inv-1", text: "deterministic inv", appliesWhen: [] }] },
+    ],
   });
   ext.register(pi as never);
   const ctx = {

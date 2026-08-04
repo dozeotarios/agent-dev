@@ -105,10 +105,15 @@ describe("agentdev install CLI (AC-INSTALL-1/2)", () => {
       "agentdev-define-language",
       "agentdev-define-constraints",
       "agentdev-plan",
+      "agentdev-slice-tasks",
       "agentdev-build",
+      "agentdev-enforce-first",
       "agentdev-verify",
       "agentdev-review",
+      "agentdev-audit-code",
+      "agentdev-security-review",
       "agentdev-commit",
+      "agentdev-hook-commits",
     ]) {
       expect(existsSync(join(process.cwd(), "pi", "skills", skill, "SKILL.md"))).toBe(true);
     }

@@ -11,8 +11,11 @@ pick. The answers become planner context, reviewer checklists, and
 acceptance-criteria inputs.
 
 ## Procedure
-1. Generate pre-filled candidates per category (fixed order):
-   **do · dont · failure_modes · edge_cases · invariants**.
+1. **Candidates come from the LLM thinking about THIS goal** (the prompt is the
+   input — not boilerplate): the leader reads the goal, its domain, and its
+   risks, and proposes 4-6 SPECIFIC candidates per category
+   (**do · dont · failure_modes · edge_cases · invariants**). If the model is
+   unavailable, a deterministic knowledge base is the fallback.
 2. Present each category to the operator; they pick one item, or `none`.
    Timeout → `none` for that category.
 3. Every category gets an explicit answer — `none` is valid, silence is not.

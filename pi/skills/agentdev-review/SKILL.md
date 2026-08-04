@@ -7,7 +7,10 @@ description: The 6-lens code review — Security, Tests, Architecture, Readabili
 
 ## When to use
 After all stories are built and verified. Up to 6 rounds; the loop ends only
-when a round produces zero BLOCKING findings.
+when a round produces zero BLOCKING findings. For the deep procedures behind
+each lens, follow the vendored bigpowers skills: agentdev-audit-code
+(heuristics, six lenses) and agentdev-security-review (vuln categories,
+confidence rubric).
 
 ## Procedure
 1. For each lens, validate the diff/context against the operator's checklist:
