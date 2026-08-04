@@ -531,13 +531,26 @@ export function createOrchestrator(
       }
       const outcome = await ports.waitForWorker(worker);
       if (outcome !== "done") {
+        // A worker may BLOCK on a cross-story dependency (its tests need a
+        // sibling's file it must not touch) while still delivering committed
+        // work. That belongs to the INTEGRATION phase — merge it and let the
+        // integration verify + fix worker resolve it. Only no-work blocks fail.
+        const hasWork = worktreeHasWork(w.worktreePath, baseRepo);
+        if (!hasWork) {
+          ports.notify(
+            `agentdev: ${w.storyId} worker ${outcome} with NO committed work — pane left open`,
+            "warning",
+          );
+          throw new Error(`subworker ${w.storyId} ${outcome} (no work delivered)`);
+        }
         ports.notify(
-          `agentdev: ${w.storyId} worker ${outcome} — pane left open for inspection`,
+          `agentdev: ${w.storyId} worker ${outcome} but committed — integration will validate`,
           "warning",
         );
-        throw new Error(`subworker ${w.storyId} ${outcome}`);
+        await ports.teardownWorker(worker, true); // keep the pane for inspection
+      } else {
+        await ports.teardownWorker(worker); // delivered → close the pane
       }
-      await ports.teardownWorker(worker); // delivered → close the pane
       try {
         f.setStatus(w.storyId, "done");
       } catch {
@@ -1007,6 +1020,19 @@ function currentBranchOf(worktree: string): string | null {
     );
   } catch {
     return null;
+  }
+}
+
+/** Did the worker deliver anything? (committed OR uncommitted changes) */
+function worktreeHasWork(worktree: string, baseRepo: string): boolean {
+  try {
+    const porcelain = porcelainOf(worktree);
+    if (porcelain.trim().length > 0) return true;
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktree, encoding: "utf8", timeout: 15_000 }).trim();
+    const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: baseRepo, encoding: "utf8", timeout: 15_000 }).trim();
+    return head !== base;
+  } catch {
+    return false;
   }
 }
 
