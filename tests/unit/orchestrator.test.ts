@@ -424,6 +424,39 @@ describe("orchestrator (AC-DOD-1): full pipeline with recorded agents", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
+  it("ITERATES when the Critic approves but the Architect flagged NEEDS WORK", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-pairgate-"));
+    const asks: string[] = [];
+    const base = fakePorts();
+    let rounds = 0;
+    const orch = createOrchestrator(
+      {
+        ...base,
+        ask(prompt) {
+          asks.push(prompt);
+          if (/Architect in a consensus-planning loop/.test(prompt)) {
+            rounds += 1;
+            // round 1: NEEDS WORK (blocks approval) · round 2: SOUND
+            return rounds === 1 ? "NEEDS WORK — antithesis: over-engineered" : "SOUND — tradeoff considered";
+          }
+          if (/Developer in a consensus-planning loop/.test(prompt)) return "FEASIBLE";
+          if (/final quality gate in a consensus-planning loop/.test(prompt)) return "APPROVE";
+          return base.ask(prompt);
+        },
+      },
+      { cwd, createWorktree: fakeWorktree, git: fakeGit, waitForLeaderPlan: true },
+    );
+    const pending = orch.start("pair gate goal");
+    orch.acceptLeaderPlanForLatest(PLAN);
+    const run = await pending;
+    expect(run.step).toBe("done");
+    // architect reviewed TWICE (round 1 blocked approval → round 2 after revise)
+    expect(rounds).toBe(2);
+    // the planner revised between rounds (a revision hint was sent)
+    expect(asks.some((a) => /REVISION|Revise the plan/.test(a))).toBe(true);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
   it("skipConsensus: operator opt-out skips the whole loop", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-skip-"));
     const asks: string[] = [];

@@ -439,6 +439,9 @@ export function createOrchestrator(
     if (seed) {
       planOutput = leaderPlan;
       loop.submit({ role: "planner", content: seed });
+      ports.notify(`agentdev: CONSENSUS round 1 — reviewing the leader's plan (Architect ∥ Developer → Critic)`);
+    } else {
+      ports.notify(`agentdev: CONSENSUS round 1 — Planner drafting (Architect ∥ Developer → Critic)`);
     }
     // per-role review history (closed loop: every role's feedback reaches the
     // next planner revision AND the critic sees the architect/developer reviews)
@@ -500,7 +503,24 @@ export function createOrchestrator(
         loop.submit({ role, content: out });
       } else if (role === "critic") {
         critiques.push(out);
-        loop.submit({ role, content: out, verdict: criticVerdict(out) });
+        const verdict = criticVerdict(out);
+        // ITERATE ON THE PAIR'S FINDINGS TOO: approval requires Critic APPROVE
+        // AND Architect SOUND AND Developer FEASIBLE — their findings are as
+        // binding as the critic's, never silently overruled by an approve.
+        const aLast = (architectReviews[architectReviews.length - 1] ?? "").trim();
+        const dLast = (developerReviews[developerReviews.length - 1] ?? "").trim();
+        const pairClean = /^SOUND/i.test(aLast) && /^FEASIBLE/i.test(dLast);
+        const effective: "approve" | "iterate" | "reject" =
+          verdict === "approve" && !pairClean ? "iterate" : verdict;
+        loop.submit({ role, content: out, verdict: effective });
+        ports.notify(
+          effective === "approve"
+            ? `agentdev: CONSENSUS round ${loop.state().round} — Critic APPROVE, Architect SOUND, Developer FEASIBLE (plan approved)`
+            : verdict === "approve"
+              ? `agentdev: CONSENSUS round ${loop.state().round} — Critic approved but ${aLast.startsWith("SOUND") ? "" : "Architect "}${!aLast.startsWith("SOUND") && !dLast.startsWith("FEASIBLE") ? "and " : ""}${dLast.startsWith("FEASIBLE") ? "" : "Developer "}flagged issues → revising`
+              : `agentdev: CONSENSUS round ${loop.state().round} — Critic ${effective.toUpperCase()} → planner revises`,
+          effective === "approve" ? "info" : "warning",
+        );
       } else {
         loop.submit({ role, content: out });
       }
