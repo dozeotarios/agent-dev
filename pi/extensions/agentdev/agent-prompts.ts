@@ -22,12 +22,15 @@ export const FILE_PLAN_SCHEMA = `"filePlan": {
 export const FILE_PLAN_INSPECT = `BEFORE emitting: if the repo has code, inspect its real layout (ls/read the tree) and anchor EVERY path in it — the crew builds exactly these files and nothing else. Be granular: files, not vague directories; include tests and configs in the touch map.`;
 
 /** Replaces the planner's old JSON schema in prompts. */
-export const STORIES_SCHEMA = `"stories": [ { "id": "story-1", "criteria": [2-3 testable strings], "files": { "create": [paths], "modify": [paths], "doNotTouch": [paths] } } x N ]`;
+export const STORIES_SCHEMA = `"stories": [ { "id": "story-1", "criteria": [2-3 testable strings], "bcps": 1-13 effort estimate, "verify": "runnable command proving this story", "files": { "create": [paths], "modify": [paths], "doNotTouch": [paths] } } x N ]`;
+
+/** ELABORATE + scope outputs (map-codebase / define-language / scope-work). */
+export const ELABORATE_SCHEMA = `"architecture": { "stack": string, "notes": string, "risks": [strings] }, "glossary": [ { "term": string, "definition": string } ], "scope": { "in": [strings], "out": [strings] }`;
 
 /** Story-split instruction: DISJOINT files — parallel workers never overlap. */
 export const STORIES_SPLIT = `SPLIT the work into stories (the worker count = stories.length, so split by how much work the plan has). Every story gets its own criteria and its own files. HARD RULE: no file may appear in the create/modify of TWO different stories — if two pieces of work touch the same file, they are ONE story. Include tests and configs in each story's files.`;
 
-export const PLANNER_JSON_SCHEMA = `{ "principles": [3-5 strings], "drivers": [exactly 3 strings], "options": [{"name","pros":[...],"cons":[...]} x >=2], "adr": { "decision", "drivers":[...], "alternatives":[...], "why", "consequences":[...], "followups":[...] }, ${FILE_PLAN_SCHEMA}, ${STORIES_SCHEMA}, "acceptanceCriteria": [>=3 testable strings] }`;
+export const PLANNER_JSON_SCHEMA = `{ "principles": [3-5 strings], "drivers": [exactly 3 strings], "options": [{"name","pros":[...],"cons":[...]} x >=2], "adr": { "decision", "drivers":[...], "alternatives":[...], "why", "consequences":[...], "followups":[...] }, ${ELABORATE_SCHEMA}, ${FILE_PLAN_SCHEMA}, ${STORIES_SCHEMA}, "acceptanceCriteria": [>=3 testable strings] }`;
 
 export const RALPLAN_ROLE_INSTRUCTIONS: Record<Role, string> = {
   planner:

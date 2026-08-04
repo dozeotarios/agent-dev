@@ -15,7 +15,14 @@ function tmpCwd(): string {
 }
 
 /** Minimal deterministic stand-in for the pi API at the unit layer. */
-function loadExtension(cwd?: string) {
+interface LoadOpts {
+  cwd?: string;
+  /** Grill-lite provider (default: none → no questions). */
+  clarify?: (goal: string) => Promise<{ question: string; options: string[] }[]>;
+}
+
+function loadExtension(opts?: LoadOpts | string) {
+  const cwd = typeof opts === "string" ? opts : opts?.cwd;
   const commands = new Map<string, CommandDef>();
   const hooks = new Map<string, HookHandler>();
   const tools: unknown[] = [];
@@ -50,6 +57,7 @@ function loadExtension(cwd?: string) {
     makeOrchestrator: () => fakeOrch as never,
     cwd: cwd ?? tmpCwd(),
     // deterministic constraint candidates — never a real LLM call in tests
+    clarifyingQuestions: (typeof opts !== "string" && opts?.clarify) || (async () => []),
     constraintSuggest: async () => [
       { category: "do", items: [{ id: "do-1", text: "deterministic do", appliesWhen: [] }] },
       { category: "dont", items: [{ id: "dont-1", text: "deterministic dont", appliesWhen: [] }] },
@@ -143,7 +151,20 @@ describe("extension entry — index.ts (wiring)", () => {
     expect(titles).toContain("Choose a stack"); // greenfield → the operator picks
     expect(titles.some((t) => t.startsWith("define-constraints:"))).toBe(true);
     expect(titles).toContain("Project mode");
-    expect(titles.some((t) => t.includes("Research up-to-date techniques"))).toBe(true);
+    // techniques research is always on — no dialog for it anymore
+    expect(titles.some((t) => t.includes("Research up-to-date"))).toBe(false);
+  });
+
+  it("grill-lite questions appear as dialogs when the provider returns them", async () => {
+    const { hooks, ctx, commands } = loadExtension({
+      clarify: async () => [
+        { question: "Should it support teams?", options: ["a) yes", "b) no", "c) later", "d) single user only"] },
+      ],
+    });
+    await commands.get("agentdev")!.handler("on", ctx);
+    await hooks.get("before_agent_start")!({ prompt: "build a todo app" }, ctx);
+    const titles = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(titles.some((t) => t.includes("Clarify — Should it support teams?"))).toBe(true);
   });
 
   it("interview timeouts fall back to defaults (unattended run)", async () => {

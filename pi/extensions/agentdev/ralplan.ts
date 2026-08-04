@@ -200,6 +200,29 @@ export interface PlanStory {
   id: string;
   criteria: string[];
   files: PlanStoryFiles;
+  /** Business complexity estimate 1-13 (slice-tasks; >8 → split). */
+  bcps?: number;
+  /** Runnable verify command for this story (HARD GATE: never "manually check"). */
+  verify?: string;
+}
+
+/** LLM map-codebase output (Phase 2 ELABORATE). */
+export interface PlanArchitecture {
+  stack: string;
+  notes: string;
+  risks: string[];
+}
+
+/** LLM define-language output (Phase 2 ELABORATE). */
+export interface PlanGlossaryTerm {
+  term: string;
+  definition: string;
+}
+
+/** scope-work output (Phase 3 PLAN). */
+export interface PlanScope {
+  in: string[];
+  out: string[];
 }
 
 export interface PlanOutput {
@@ -220,6 +243,12 @@ export interface PlanOutput {
    * absent, criteria are sliced deterministically (planToStories fallback).
    */
   stories?: PlanStory[];
+  /** LLM map-codebase: stack, architecture notes, risk signals. */
+  architecture?: PlanArchitecture;
+  /** LLM define-language: domain glossary from goal + repo. */
+  glossary?: PlanGlossaryTerm[];
+  /** scope-work: explicit in/out of scope. */
+  scope?: PlanScope;
   preMortem?: string[];
   testPlan?: string[];
 }

@@ -903,6 +903,27 @@ function parsePlanOutput(json: string): PlanOutput | null {
             doNotTouch: Array.isArray(j.filePlan.doNotTouch) ? j.filePlan.doNotTouch.map(String) : [],
           }
         : { structure: "", create: [], modify: [], doNotTouch: [] },
+      architecture: j.architecture
+        ? {
+            stack: String(j.architecture.stack ?? ""),
+            notes: String(j.architecture.notes ?? ""),
+            risks: Array.isArray(j.architecture.risks) ? j.architecture.risks.map(String) : [],
+          }
+        : undefined,
+      glossary: Array.isArray(j.glossary)
+        ? j.glossary
+            .filter((g: unknown) => !!g && typeof g === "object")
+            .map((g: unknown) => ({
+              term: String((g as Record<string, unknown>).term ?? ""),
+              definition: String((g as Record<string, unknown>).definition ?? ""),
+            }))
+        : undefined,
+      scope: j.scope
+        ? {
+            in: Array.isArray(j.scope.in) ? j.scope.in.map(String) : [],
+            out: Array.isArray(j.scope.out) ? j.scope.out.map(String) : [],
+          }
+        : undefined,
       stories: Array.isArray(j.stories)
         ? j.stories
             .filter((st: unknown) => !!st && typeof st === "object")
@@ -912,6 +933,8 @@ function parsePlanOutput(json: string): PlanOutput | null {
               return {
                 id: String(s2.id ?? ""),
                 criteria: Array.isArray(s2.criteria) ? s2.criteria.map(String) : [],
+                bcps: typeof s2.bcps === "number" ? s2.bcps : undefined,
+                verify: typeof s2.verify === "string" ? s2.verify : undefined,
                 files: {
                   create: Array.isArray(files.create) ? (files.create as unknown[]).map(String) : [],
                   modify: Array.isArray(files.modify) ? (files.modify as unknown[]).map(String) : [],

@@ -37,6 +37,8 @@ import type { ManualAnswers, OrchestratorPorts } from "./orchestrator";
 export interface OperatorUI {
   notify(message: string, level?: "info" | "warning" | "error"): void;
   select<T extends string>(title: string, options: { value: T; label: string }[]): Promise<T>;
+  /** Multi-select: pick any subset (or none) + optional custom answer. */
+  multiSelect<T extends string>(title: string, options: { value: T; label: string }[]): Promise<T[]>;
   input(title: string, placeholder?: string): Promise<string>;
 }
 
@@ -199,14 +201,11 @@ export function createRealPorts(opts: RealPortsOptions): OrchestratorPorts {
         riskSignals: [],
       });
       for (const cat of candidates) {
-        const picked = await ui.select(
+        const picked = await ui.multiSelect(
           `define-constraints: ${cat.category} (select items, or none)`,
-          [
-            { value: "none", label: "none" },
-            ...cat.items.map((i) => ({ value: i.id, label: i.text })),
-          ],
+          cat.items.map((i) => ({ value: i.id, label: i.text })),
         );
-        interview.answer(cat.category, picked === "none" ? "none" : [picked]);
+        interview.answer(cat.category, picked.length === 0 ? "none" : picked);
       }
       // pick a project mode (AC-MANUAL-7)
       const modePick = await ui.select("Project mode", PROJECT_MODES.map((m) => ({ value: m, label: m })));

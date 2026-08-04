@@ -37,22 +37,20 @@ import { createInterview, generateCandidates, CATEGORY_ORDER, type CategoryCandi
  * needsResearch = the operator chose the web-research stack path;
  * techniquesResearch = the operator wants up-to-date technique research.
  */
-const LEADER_PLAN_PROMPT = (manual: string, needsResearch: boolean, techniquesResearch: boolean): string => {
+const LEADER_PLAN_PROMPT = (manual: string, needsResearch: boolean): string => {
   const research = needsResearch
     ? `\nSTACK RESEARCH REQUIRED — the operator asked you to research the BEST LANGUAGE FOR THIS USE CASE on the web.
 Use the web_search tool (not generic "top languages" lists): evaluate performance, domain fit, ecosystem,
 deploy target, and maintainability FOR THIS SPECIFIC GOAL. The best fit may be Rust, C++, Go, Python,
 TypeScript, or anything else — pick what the use case actually needs.
 After the plan JSON block, emit one more line: STACK: <id> (your researched pick, lowercase).`
-    : techniquesResearch
-      ? `\nTECHNIQUES RESEARCH — the operator wants you to check the web for UP-TO-DATE techniques, libraries, and
+    : `\nTECHNIQUES RESEARCH (ALWAYS ON) — check the web for the MOST UP-TO-DATE techniques, libraries, and
 best practices for this goal (current library versions, API changes, modern idioms). Bounded: at most 3
-searches; skip if the domain is stable. Fold what you find into principles/options/ADR — no citations list needed.`
-      : "";
+searches; skip only if the domain is provably stable. Fold what you find into principles/options/ADR — no citations list needed.`;
   const tools =
-    needsResearch || techniquesResearch
-      ? "You MAY use web_search for the research above only. "
-      : "Do NOT use tools. ";
+    needsResearch
+      ? "You MAY use web_search for the stack research. "
+      : "You MAY use web_search for the techniques research (bounded 3). ";
   return `You are the Leader of an agent crew. The user's message is a GOAL for your crew to build.
 
 Manual phase (agentdev-map-codebase / agentdev-choose-stack / agentdev-define-language / agentdev-define-constraints) is done:
@@ -65,13 +63,16 @@ Your job is PLANNING (agentdev-plan). Think the goal through, then emit the plan
   "drivers": [exactly 3 strings],
   "options": [ {"name": string, "pros": [strings], "cons": [strings]} x at least 2 ],
   "adr": { "decision": string, "drivers": [strings], "alternatives": [strings], "why": string, "consequences": [strings], "followups": [strings] },
+  "architecture": { "stack": string, "notes": string, "risks": [strings] },
+  "glossary": [ { "term": string, "definition": string } ],
+  "scope": { "in": [strings], "out": [strings] },
   "filePlan": {
     "structure": "proposed folder layout (greenfield) or existing-layout anchor (brownfield)",
     "create": ["exact repo-root-relative paths of NEW files"],
     "modify": ["exact repo-root-relative paths of EXISTING files to change"],
     "doNotTouch": ["paths that must stay untouched"]
   },
-  "stories": [ { "id": "story-1", "criteria": [2-3 testable strings], "files": { "create": [paths], "modify": [paths], "doNotTouch": [paths] } } x N ],
+  "stories": [ { "id": "story-1", "criteria": [2-3 testable strings], "bcps": 1-13 effort estimate, "verify": "runnable command proving this story", "files": { "create": [paths], "modify": [paths], "doNotTouch": [paths] } } x N ],
   "acceptanceCriteria": [at least 3 testable strings]
 }
 
@@ -132,13 +133,75 @@ export async function llmSuggestConstraintCandidates(
   }
 }
 
+const DONE_LABEL = "✅ Done";
+const CUSTOM_LABEL = "✏️ Write my own…";
+
+/**
+ * Multi-select dialog loop (options a,b,c,d… + multi-pick + custom answer).
+ * Returns the picked LABELS (texts — they flow into the review checklists).
+ */
+async function interviewMultiSelect(
+  ui: ExtensionUIContext,
+  title: string,
+  items: string[],
+): Promise<string[]> {
+  const picked: string[] = [];
+  for (;;) {
+    const remaining = items.filter((i) => !picked.includes(i));
+    const opts = [DONE_LABEL, CUSTOM_LABEL, ...remaining];
+    const choice = await ui.select(
+      picked.length > 0 ? `${title} (${picked.length} picked)` : title,
+      opts,
+      { timeout: 45_000 },
+    );
+    if (!choice || choice === DONE_LABEL) break;
+    if (choice === CUSTOM_LABEL) {
+      const custom = await ui.input(`${title} — your own answer`, "");
+      if (custom?.trim()) picked.push(custom.trim());
+      continue;
+    }
+    picked.push(choice);
+    if (remaining.length <= 1) break; // all items picked
+  }
+  return picked;
+}
+
+/** GRILL-LITE: the leader proposes 2-4 clarifying questions with a-d options. */
+export interface ClarifyingQuestion {
+  question: string;
+  options: string[];
+}
+
+export async function llmClarifyingQuestions(goal: string): Promise<ClarifyingQuestion[]> {
+  try {
+    const out = await askPi(
+      `You are clarifying a goal before planning it. Read the goal CAREFULLY.\n\nGoal: "${goal}"\n\nWhat 2-4 things are genuinely ambiguous or underspecified and would change the plan? For EACH, give 4 concrete answer options the operator can pick from (multi-select allowed).\nEmit ONLY JSON: { "questions": [ { "question": "...", "options": ["a)", "b)", "c)", "d)"] } ] }`,
+      120_000,
+    );
+    const cleaned = out.trim().replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
+    const j = JSON.parse(cleaned) as { questions?: unknown };
+    const qs = Array.isArray(j.questions) ? j.questions : [];
+    return qs
+      .filter((q): q is Record<string, unknown> => !!q && typeof q === "object")
+      .slice(0, 4)
+      .map((q) => ({
+        question: String(q.question ?? ""),
+        options: Array.isArray(q.options) ? q.options.map(String) : [],
+      }))
+      .filter((q) => q.question && q.options.length > 0);
+  } catch {
+    return []; // LLM unavailable → skip grill-lite (timeout-safe)
+  }
+}
+
 async function runManualInterview(
   ui: ExtensionUIContext,
   goal: string,
   facts: { existingRepo: boolean; stack: string | null },
   suggest: ConstraintSuggester = llmSuggestConstraintCandidates,
-): Promise<Map<string, string>> {
-  const answers = new Map<string, string>();
+  clarify: (goal: string) => Promise<ClarifyingQuestion[]> = llmClarifyingQuestions,
+): Promise<Map<string, string[]>> {
+  const answers = new Map<string, string[]>();
   try {
     // choose-stack (AC-MANUAL-1/2): greenfield → the operator chooses
     if (!facts.stack) {
@@ -150,50 +213,52 @@ async function runManualInterview(
           sel.candidates.find((c) => c.name === pick) ??
           sel.candidates.find((c) => c.id === "typescript") ?? // timeout default: NOT research
           sel.candidates[0]!;
-        answers.set("Choose a stack", chosen.id);
+        answers.set("Choose a stack", [chosen.id]);
       }
     }
+    // GRILL-LITE: 2-4 LLM clarifying questions, options a-d, multi-select + custom
+    const questions = await clarify(goal);
+    for (let i = 0; i < questions.length; i += 1) {
+      const q = questions[i]!;
+      answers.set(
+        `clarify:${i}`,
+        await interviewMultiSelect(ui, `Clarify — ${q.question}`, q.options),
+      );
+    }
     // define-constraints interview (AC-MANUAL-4/5) — candidates come from the
-    // LLM thinking about THIS goal; deterministic KB is the fallback
+    // LLM thinking about THIS goal; deterministic KB is the fallback.
+    // Multi-select per category + custom answers (DOs and DON'Ts included).
     const candidates = await suggest(goal, {
       stack: facts.stack ?? "typescript",
       existingRepo: facts.existingRepo,
     });
     for (const cat of candidates) {
       const title = `define-constraints: ${cat.category} (select items, or none)`;
-      const labels = ["none", ...cat.items.map((i) => i.text)];
-      const pick = await ui.select(title, labels, { timeout: 30_000 });
-      const idx = labels.indexOf(pick ?? "");
-      answers.set(title, idx <= 0 ? "none" : cat.items[idx - 1]!.id);
+      answers.set(
+        title,
+        await interviewMultiSelect(ui, title, cat.items.map((i) => i.text)),
+      );
     }
     // project mode (AC-MANUAL-7) — direct-PR presented first (the default)
     const modeLabels = ["direct-PR", "no-mistakes", "local-only", "+yolo"];
     const modePick = await ui.select("Project mode", modeLabels, { timeout: 30_000 });
-    answers.set("Project mode", modePick ?? "direct-PR");
-    // up-to-date techniques research (features + new projects): the leader
-    // MAY check the web for current best practices / libraries / API changes
-    const researchPick = await ui.select(
-      "Research up-to-date techniques for this goal?",
-      ["Yes — web research (recommended)", "No — plan from knowledge"],
-      { timeout: 30_000 },
-    );
-    answers.set(
-      "Research up-to-date techniques for this goal?",
-      researchPick === "No — plan from knowledge" ? "no" : "yes",
-    );
+    answers.set("Project mode", [modePick ?? "direct-PR"]);
   } catch (e) {
     console.warn(`[agentdev] interview failed (defaults used): ${e instanceof Error ? e.message : String(e)}`);
   }
   return answers;
 }
 
-function manualSummary(answers: Map<string, string>, facts: { existingRepo: boolean; stack: string | null }): string {
-  const stack = answers.get("Choose a stack") ?? facts.stack ?? "(auto)";
-  const mode = answers.get("Project mode") ?? "direct-PR";
+function manualSummary(answers: Map<string, string[]>, facts: { existingRepo: boolean; stack: string | null }): string {
+  const stack = answers.get("Choose a stack")?.[0] ?? facts.stack ?? "(auto)";
+  const mode = answers.get("Project mode")?.[0] ?? "direct-PR";
   const constraints = [...answers.entries()]
-    .filter(([k]) => k.startsWith("define-constraints:") && answers.get(k) !== "none")
-    .map(([k, v]) => `${k.split(":")[1]!.trim().split(" ")[0]}=${v}`);
-  return `stack: ${stack} | mode: ${mode} | constraints: ${constraints.length > 0 ? constraints.join(", ") : "none selected"}`;
+    .filter(([k]) => k.startsWith("define-constraints:") && (answers.get(k) ?? []).length > 0)
+    .map(([k, v]) => `${k.split(":")[1]!.trim().split(" ")[0]}=${(v ?? []).join(" | ")}`);
+  const clarifications = [...answers.entries()]
+    .filter(([k]) => k.startsWith("clarify:"))
+    .map(([k, v]) => `Q${k.slice("clarify:".length)}: ${(v ?? []).join(" | ") || "(no answer)"}`);
+  return `stack: ${stack} | mode: ${mode} | constraints: ${constraints.length > 0 ? constraints.join(", ") : "none selected"}${clarifications.length > 0 ? ` | clarifications: ${clarifications.join(" ; ")}` : ""}`;
 }
 
 /** Last assistant text from an agent_end message list (string or blocks). */
@@ -233,6 +298,8 @@ export interface AgentdevExtensionOptions {
   ) => ReturnType<typeof createOrchestrator>;
   /** Tests inject a deterministic suggester; production = LLM + fallback. */
   constraintSuggest?: ConstraintSuggester;
+  /** Tests inject no clarifications; production = LLM grill-lite. */
+  clarifyingQuestions?: (goal: string) => Promise<ClarifyingQuestion[]>;
   /** Project cwd for toggle persistence (tests pass a tmp dir). */
   cwd?: string;
 }
@@ -270,7 +337,7 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
   /** Real TUI context for interactive dialogs (captured from hooks/commands). */
   let uiCtx: ExtensionUIContext | null = null;
   /** Precomputed interview answers (interactive manual phase, AC-MANUAL-*). */
-  let pendingAnswers = new Map<string, string>();
+  let pendingAnswers = new Map<string, string[]>();
 
   const ensureOrchestrator = (): ReturnType<typeof createOrchestrator> => {
     if (orch) return orch;
@@ -285,10 +352,11 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
       ): Promise<T> => {
         // 1. precomputed interactive answer (the before_agent_start interview)
         const pre = pendingAnswers.get(title);
-        if (pre !== undefined) {
+        if (pre !== undefined && pre.length > 0) {
           pendingAnswers.delete(title);
-          return pre as T;
+          return pre[0] as T;
         }
+        if (pre !== undefined) pendingAnswers.delete(title); // explicit empty
         // 2. live dialog fallback (resumed goals / late interview steps)
         if (uiCtx) {
           const picked = await uiCtx.select(
@@ -302,6 +370,25 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
         }
         // 3. headless default: first option
         return options[0]!.value;
+      },
+      multiSelect: async <T extends string>(
+        title: string,
+        options: { value: T; label: string }[],
+      ): Promise<T[]> => {
+        // 1. precomputed interview answers — the stored LABELS flow straight
+        //    into the review checklists
+        const pre = pendingAnswers.get(title);
+        if (pre !== undefined) {
+          pendingAnswers.delete(title);
+          return pre as T[];
+        }
+        // 2. live dialog loop (resumed goals / late steps): a,b,c,d… +
+        //    Done + custom answer
+        if (uiCtx) {
+          return interviewMultiSelect(uiCtx, title, options.map((o) => o.label)) as Promise<T[]>;
+        }
+        // 3. headless default: none
+        return [];
       },
       input: async (title: string, placeholder?: string): Promise<string> => {
         if (uiCtx) {
@@ -411,10 +498,9 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
           prompt,
           facts,
           opts.constraintSuggest ?? llmSuggestConstraintCandidates,
+          opts.clarifyingQuestions ?? llmClarifyingQuestions,
         );
-        const needsResearch = pendingAnswers.get("Choose a stack") === "research";
-        const techniquesResearch =
-          pendingAnswers.get("Research up-to-date techniques for this goal?") !== "no";
+        const needsResearch = pendingAnswers.get("Choose a stack")?.[0] === "research";
         const o = ensureOrchestrator();
         // Defer the pipeline: never run goal setup synchronously inside the
         // hook. The crew must not block the interactive session — the whole
@@ -431,7 +517,6 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
           systemPrompt: `${event.systemPrompt}\n\n${LEADER_PLAN_PROMPT(
             manualSummary(pendingAnswers, facts),
             needsResearch,
-            techniquesResearch,
           )}`,
         };
       });
