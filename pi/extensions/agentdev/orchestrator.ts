@@ -69,6 +69,8 @@ export interface BuildContext {
   filePlan?: import("./ralplan").FilePlan;
   /** This story's OWN disjoint file set (AC-PLAN-STORIES). */
   storyFiles?: import("./ralplan").PlanStoryFiles;
+  /** Runnable verify command for this story (slice-tasks HARD GATE). */
+  verify?: string;
 }
 
 export interface ReviewRoundInput {
@@ -523,6 +525,7 @@ export function createOrchestrator(
         mode: p.mode,
         filePlan: p.plan?.filePlan,
         storyFiles: p.storyFiles[w.storyId],
+        verify: p.plan?.stories?.find((x) => x.id === w.storyId)?.verify,
       });
       try {
         f.setPaneId(w.storyId, worker.paneId); // fleet node id == storyId
