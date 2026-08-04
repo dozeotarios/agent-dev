@@ -43,6 +43,8 @@ export interface CrewBriefInput {
   filePlan?: { structure: string; create: string[]; modify: string[]; doNotTouch: string[] };
   /** THIS story's own disjoint files (AC-PLAN-STORIES) — the worker's exact scope. */
   storyFiles?: { create: string[]; modify: string[]; doNotTouch: string[] };
+  /** Runnable verify command for this story (slice-tasks HARD GATE). */
+  verify?: string;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -114,6 +116,7 @@ STACK: ${input.stack ?? "(auto)"}  MODE: ${input.mode}
 
 ACCEPTANCE CRITERIA for your slice (your contract — every one must be verifiable):
 ${input.criteria.map((c) => `- ${c}`).join("\n")}
+${input.verify ? `VERIFY: run this to prove the story: ${input.verify}` : ""}
 
 TOUCH PLAN (SCOPE BOUNDARY — binding, from the approved plan):
 YOUR STORY'S FILES (yours alone — parallel workers never touch these):
@@ -186,6 +189,7 @@ export function spawnWorker(
       reportPath,
       filePlan: ctx.filePlan,
       storyFiles: ctx.storyFiles,
+      verify: ctx.verify,
     }),
   );
   return {
