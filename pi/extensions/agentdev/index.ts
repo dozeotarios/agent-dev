@@ -47,7 +47,7 @@ After the plan JSON block, emit one more line: STACK: <id> with your researched 
 STACK: rust, STACK: csharp — lowercase).`
     : `\nTECHNIQUES RESEARCH (ALWAYS ON) — check the web for the MOST UP-TO-DATE techniques, libraries, and
 best practices for this goal (current library versions, API changes, modern idioms). Bounded: at most 3
-searches; skip only if the domain is provably stable. Fold what you find into principles/options/ADR — no citations list needed.`;
+searches; skip only if the domain is provably stable. Fold what you find into principles/options/ADR.`;
   const tools =
     needsResearch
       ? "You MAY use web_search for the stack research. "
@@ -57,7 +57,9 @@ searches; skip only if the domain is provably stable. Fold what you find into pr
 Manual phase (agentdev-map-codebase / agentdev-choose-stack / agentdev-define-language / agentdev-define-constraints) is done:
 ${manual}${research}
 
-Your job is PLANNING (agentdev-plan). Think the goal through, then emit the plan as ONE JSON object inside a single \`\`\`json code block — nothing else outside the block:
+Your job is PLANNING (agentdev-plan). Think the goal through, then emit the plan as ONE JSON object inside a single \`\`\`json code block — nothing else outside the block.
+
+REPORT YOUR SEARCH VISIBLY FIRST: before the JSON block, write 2-4 lines starting with "RESEARCH:" — what you searched, which tool/source, and the 1-2 key findings that shaped the plan (e.g. current library versions, API changes, language fit evidence). The operator watches this to confirm the web research actually happened. If you skipped research because the domain is stable, write "RESEARCH: skipped — domain stable" and say why.
 
 {
   "principles": [3-5 strings],
@@ -522,6 +524,14 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
           opts.clarifyingQuestions ?? llmClarifyingQuestions,
         );
         const needsResearch = pendingAnswers.get("Choose a stack")?.[0] === "research";
+        // VISIBLE research announcement — the leader turn performs the web
+        // search (whichever search tool pi provides); say so up front
+        ctx.ui.notify(
+          needsResearch
+            ? `agentdev: leader is researching the BEST LANGUAGE for this goal on the web — results will show in the turn`
+            : `agentdev: leader is checking the web for up-to-date techniques — results will show in the turn`,
+          "info",
+        );
         const o = ensureOrchestrator();
         const skipConsensus = pendingAnswers.get("Consensus review of the plan?")?.[0] === "no";
         // Defer the pipeline: never run goal setup synchronously inside the
