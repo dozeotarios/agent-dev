@@ -621,13 +621,23 @@ export function createOrchestrator(
           );
           throw new Error(`subworker ${w.storyId} ${outcome} (no work delivered)`);
         }
-        const summary = readWorkerReportSafe(worker.reportPath);
         let steered = false;
         for (let steer = 1; steer <= 2; steer += 1) {
-          await ports.steerWorker(
-            worker,
-            `Your report says: ${summary.slice(0, 800)}\n\nResolve the blocker: ${outcome === "blocked" ? "complete the story per your brief" : "the story is incomplete — finish it"}. Fix in your worktree, COMMIT again, and rewrite the report.`,
-          );
+          // fresh report each steer (steer 1 may have produced a new reason)
+          const summary = readWorkerReportSafe(worker.reportPath);
+          try {
+            await ports.steerWorker(
+              worker,
+              `Your report says: ${summary.slice(0, 800)}\n\nResolve the blocker: ${outcome === "blocked" ? "complete the story per your brief" : "the story is incomplete — finish it"}. Fix in your worktree, COMMIT again, and rewrite the report.`,
+            );
+          } catch (e) {
+            // pane died between wait and steer — stop steering, escalate
+            ports.notify(
+              `agentdev: ${w.storyId} steer failed (pane gone?) — ${e instanceof Error ? e.message.slice(0, 120) : String(e)}`,
+              "warning",
+            );
+            break;
+          }
           const again = await ports.waitForWorker(worker, {
             timeoutMs: 1_800_000,
             onStuck: (min) =>

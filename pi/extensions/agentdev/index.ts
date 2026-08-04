@@ -216,8 +216,15 @@ async function runManualInterview(
         answers.set("Choose a stack", [chosen.id]);
       }
     }
-    // GRILL-LITE: 2-4 LLM clarifying questions, options a-d, multi-select + custom
-    const questions = await clarify(goal);
+    // GRILL-LITE + constraint candidates run in PARALLEL (two headless LLM
+    // calls before any dialog — serial would double the pre-interview wait)
+    const [questions, candidates] = await Promise.all([
+      clarify(goal),
+      suggest(goal, {
+        stack: facts.stack ?? "typescript",
+        existingRepo: facts.existingRepo,
+      }),
+    ]);
     for (let i = 0; i < questions.length; i += 1) {
       const q = questions[i]!;
       answers.set(
@@ -225,13 +232,6 @@ async function runManualInterview(
         await interviewMultiSelect(ui, `Clarify — ${q.question}`, q.options),
       );
     }
-    // define-constraints interview (AC-MANUAL-4/5) — candidates come from the
-    // LLM thinking about THIS goal; deterministic KB is the fallback.
-    // Multi-select per category + custom answers (DOs and DON'Ts included).
-    const candidates = await suggest(goal, {
-      stack: facts.stack ?? "typescript",
-      existingRepo: facts.existingRepo,
-    });
     for (const cat of candidates) {
       const title = `define-constraints: ${cat.category} (select items, or none)`;
       answers.set(

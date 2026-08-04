@@ -383,6 +383,110 @@ describe("orchestrator (AC-DOD-1): full pipeline with recorded agents", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
+  it("MANDATORY consensus: a valid leader plan still gets architect+developer+critic review (seeded)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-seeded-"));
+    const asks: string[] = [];
+    const base = fakePorts();
+    const orch = createOrchestrator(
+      {
+        ...base,
+        ask(prompt) {
+          asks.push(prompt);
+          return base.ask(prompt);
+        },
+      },
+      { cwd, createWorktree: fakeWorktree, git: fakeGit, waitForLeaderPlan: true },
+    );
+    const pending = orch.start("seeded goal");
+    orch.acceptLeaderPlanForLatest(PLAN);
+    const run = await pending;
+    expect(run.step).toBe("done");
+    expect(run.plan?.adr.decision).toBe("typescript CLI");
+    // seeded: the PLANNER prompt is never asked; the review pair + critic are
+    expect(asks.some((a) => /Planner in a consensus-planning loop/.test(a))).toBe(false);
+    expect(asks.some((a) => /Architect in a consensus-planning loop/.test(a))).toBe(true);
+    expect(asks.some((a) => /Developer in a consensus-planning loop/.test(a))).toBe(true);
+    expect(asks.some((a) => /final quality gate in a consensus-planning loop/.test(a))).toBe(true);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("skipConsensus: operator opt-out skips the whole loop", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-skip-"));
+    const asks: string[] = [];
+    const base = fakePorts();
+    const orch = createOrchestrator(
+      {
+        ...base,
+        ask(prompt) {
+          asks.push(prompt);
+          return base.ask(prompt);
+        },
+      },
+      { cwd, createWorktree: fakeWorktree, git: fakeGit, waitForLeaderPlan: true },
+    );
+    const pending = orch.start("skip consensus goal", { skipConsensus: true });
+    orch.acceptLeaderPlanForLatest(PLAN);
+    const run = await pending;
+    expect(run.step).toBe("done");
+    expect(asks.some((a) => /consensus-planning loop/.test(a))).toBe(false);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("STEERING: a blocked-but-committed worker is steered, not failed", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-steer-"));
+    const { execFileSync, writeFileSync, mkdirSync } = require("node:child_process") as typeof import("node:child_process") & typeof import("node:fs");
+    const fs = require("node:fs") as typeof import("node:fs");
+    // real repos so worktreeHasWork sees a committed branch (HEAD != base HEAD)
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd });
+    execFileSync("git", ["config", "user.name", "t"], { cwd });
+    fs.writeFileSync(join(cwd, "seed.txt"), "seed");
+    execFileSync("git", ["add", "-A"], { cwd });
+    execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd });
+    const wt = join(cwd, "wt");
+    fs.mkdirSync(wt, { recursive: true });
+    execFileSync("git", ["-C", cwd, "worktree", "add", wt, "-b", "agentdev-story-1"], { stdio: "ignore" });
+    fs.writeFileSync(join(wt, "work.txt"), "committed work");
+    execFileSync("git", ["-C", wt, "add", "-A"], { stdio: "ignore" });
+    execFileSync("git", ["-C", wt, "commit", "-q", "-m", "feat(story-1): work"], { stdio: "ignore" });
+    const steered: string[] = [];
+    let calls = 0;
+    const reportPath = join(cwd, ".agentdev", "goals", "goal-steer", "reports", "story-1.md");
+    fs.mkdirSync(join(reportPath, ".."), { recursive: true });
+    const orch = createOrchestrator(
+      fakePorts({
+        spawnWorker: (ctx) => ({
+          goalId: ctx.goalId,
+          storyId: ctx.storyId,
+          worktree: ctx.worktree,
+          paneId: "steer-pane",
+          workspaceId: "steer-ws",
+          name: "worker-story-1",
+          reportPath,
+        }),
+        waitForWorker: () => {
+          calls += 1;
+          if (calls === 1) {
+            fs.writeFileSync(reportPath, "STORY_BLOCKED: needs sibling file\n");
+            return "blocked";
+          }
+          return "done"; // after steering → done
+        },
+        steerWorker: (_w, text) => {
+          steered.push(text);
+          fs.writeFileSync(reportPath, "STORY_DONE\nfixed\n");
+        },
+        teardownWorker: () => undefined,
+      }),
+      { cwd, createWorktree: () => wt, git: fakeGit },
+    );
+    const run = await orch.start("steer me");
+    expect(run.step).toBe("done");
+    expect(steered.length).toBeGreaterThanOrEqual(1);
+    expect(steered[0]).toContain("STORY_BLOCKED");
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
   it("unparseable leader plan → consensus fallback runs the ralplan loop", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-leader-bad-"));
     const asks: string[] = [];
