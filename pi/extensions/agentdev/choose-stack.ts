@@ -67,6 +67,33 @@ export const STACK_CANDIDATES: StackCandidate[] = [
       deploy: "Static binaries; minimal footprint",
     },
   },
+  {
+    id: "cplusplus",
+    name: "C++",
+    rationale: {
+      performance: "Maximum control; latency-critical systems",
+      ecosystem: "Mature systems ecosystem; steep learning curve",
+      deploy: "Native binaries; platform-specific builds",
+    },
+  },
+  {
+    id: "csharp",
+    name: "C# (.NET)",
+    rationale: {
+      performance: "Strong runtime performance; GC-managed",
+      ecosystem: "Rich .NET ecosystem; great enterprise tooling",
+      deploy: "Cross-platform via .NET; easy containers",
+    },
+  },
+  {
+    id: "java",
+    name: "Java",
+    rationale: {
+      performance: "Solid JIT performance; predictable GC",
+      ecosystem: "Huge enterprise ecosystem; mature tooling",
+      deploy: "JVM everywhere; heavier footprint",
+    },
+  },
 ];
 
 export type StackSelectionResult =

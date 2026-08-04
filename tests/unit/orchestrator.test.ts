@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createOrchestrator, parseLeaderPlanOutput, projectsBoard, type OrchestratorPorts } from "../../pi/extensions/agentdev/orchestrator";
+import { createOrchestrator, parseLeaderPlanOutput, parseLeaderStack, projectsBoard, type OrchestratorPorts } from "../../pi/extensions/agentdev/orchestrator";
 import { detectCodebase } from "../../pi/extensions/agentdev/map-codebase";
 import { extractGlossary } from "../../pi/extensions/agentdev/define-language";
 import { planToStories } from "../../pi/extensions/agentdev/dispatch";
@@ -212,7 +212,21 @@ describe("perform-commit (AC-GIT-1/2/5/8)", () => {
   });
 });
 
-describe("projects board (firstmate bearings-snapshot analog)", () => {
+describe("parseLeaderStack (researched stack capture)", () => {
+  it("normalizes c++ / c# aliases and accepts plus/hash ids", () => {
+    expect(parseLeaderStack("STACK: c++")).toBe("cplusplus");
+    expect(parseLeaderStack("STACK: cpp")).toBe("cplusplus");
+    expect(parseLeaderStack("STACK: C#")).toBe("csharp");
+    expect(parseLeaderStack('"stack": "rust"')).toBe("rust");
+    expect(parseLeaderStack("STACK: elixir")).toBe("elixir");
+  });
+
+  it("returns null when no stack is emitted", () => {
+    expect(parseLeaderStack("just a plan")).toBeNull();
+  });
+});
+
+describe("projects board (bearings-snapshot analog)", () => {
   it("renders one bounded line per goal with step + report headline", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agentdev-board-"));
     const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");

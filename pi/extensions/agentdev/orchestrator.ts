@@ -397,10 +397,17 @@ export function createOrchestrator(
       leaderPlan = handoff.plan;
       // researched stack (choose-stack research path) applies even when the
       // plan fails validation — consensus then plans with the real stack
-      if (p.stack === "research" && handoff.stack) {
-        p.stack = handoff.stack;
-        ports.notify(`agentdev: researched stack → ${p.stack}`);
-        persist(p);
+      if (p.stack === "research") {
+        if (handoff.stack) {
+          p.stack = handoff.stack;
+          ports.notify(`agentdev: researched stack → ${p.stack}`);
+          persist(p);
+        } else {
+          // the leader never emitted a resolvable STACK: — make it visible
+          ports.notify(`agentdev: researched stack unresolved — defaulting to typescript`, "warning");
+          p.stack = "typescript";
+          persist(p);
+        }
       }
       // ralplan is MANDATORY by default: the leader plan seeds the consensus
       // loop as round-1 draft (Planner refines, doesn't re-draft). Only an
@@ -1087,13 +1094,25 @@ export function parseLeaderPlanOutput(text: string): PlanOutput | null {
  * Extract the researched stack the leader picked (choose-stack research
  * path): matches a `STACK: <id>` line or a "stack" key in the plan JSON.
  */
+/** Stack aliases → canonical candidate ids (the leader may emit c++ / c#). */
+const STACK_ALIASES: Record<string, string> = {
+  "c++": "cplusplus",
+  cpp: "cplusplus",
+  "cplusplus": "cplusplus",
+  "c#": "csharp",
+  csharp: "csharp",
+  node: "typescript",
+  nodejs: "typescript",
+  js: "typescript",
+};
+
 export function parseLeaderStack(text: string): string | null {
   if (!text) return null;
-  const line = text.match(/STACK:\s*([a-zA-Z0-9_-]+)/i);
-  if (line) return line[1]!.toLowerCase();
-  const key = text.match(/"stack"\s*:\s*"([^"]+)"/i);
-  if (key) return key[1]!.toLowerCase();
-  return null;
+  const line = text.match(/STACK:\s*([a-z0-9+#._-]+)/i);
+  const raw = (line ? line[1] : null) ?? text.match(/"stack"\s*:\s*"([^"]+)"/i)?.[1] ?? null;
+  if (!raw) return null;
+  const lower = raw.toLowerCase().trim();
+  return STACK_ALIASES[lower] ?? lower;
 }
 
 function criticVerdict(text: string): "approve" | "iterate" | "reject" {

@@ -40,17 +40,18 @@ import { createInterview, generateCandidates, CATEGORY_ORDER, type CategoryCandi
 const LEADER_PLAN_PROMPT = (manual: string, needsResearch: boolean): string => {
   const research = needsResearch
     ? `\nSTACK RESEARCH REQUIRED — the operator asked you to research the BEST LANGUAGE FOR THIS USE CASE on the web.
-Use the web_search tool (not generic "top languages" lists): evaluate performance, domain fit, ecosystem,
-deploy target, and maintainability FOR THIS SPECIFIC GOAL. The best fit may be Rust, C++, Go, Python,
-TypeScript, or anything else — pick what the use case actually needs.
-After the plan JSON block, emit one more line: STACK: <id> (your researched pick, lowercase).`
+You MUST use web_search at least once (not generic "top languages" lists): evaluate performance, domain fit,
+ecosystem, deploy target, and maintainability FOR THIS SPECIFIC GOAL. The best fit may be Rust, C++, C#,
+Java, Go, Python, TypeScript, or anything else — pick what the use case actually needs.
+After the plan JSON block, emit one more line: STACK: <id> with your researched pick (e.g. STACK: cplusplus,
+STACK: rust, STACK: csharp — lowercase).`
     : `\nTECHNIQUES RESEARCH (ALWAYS ON) — check the web for the MOST UP-TO-DATE techniques, libraries, and
 best practices for this goal (current library versions, API changes, modern idioms). Bounded: at most 3
 searches; skip only if the domain is provably stable. Fold what you find into principles/options/ADR — no citations list needed.`;
   const tools =
     needsResearch
       ? "You MAY use web_search for the stack research. "
-      : "You MAY use web_search for the techniques research (bounded 3). ";
+      : "You MUST use web_search for the techniques research (bounded 3). ";
   return `You are the Leader of an agent crew. The user's message is a GOAL for your crew to build.
 
 Manual phase (agentdev-map-codebase / agentdev-choose-stack / agentdev-define-language / agentdev-define-constraints) is done:
@@ -502,6 +503,17 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
         // dialogs appear before the Leader turn): choose-stack →
         // define-constraints → project mode. Answers feed the pipeline.
         const facts = detectCodebase(cwd);
+        // make the codebase analysis VISIBLE before any stack question
+        if (facts.stack) {
+          ctx.ui.notify(`agentdev: existing codebase detected — stack locked to ${facts.stack}`, "info");
+        } else {
+          ctx.ui.notify(
+            facts.existingRepo
+              ? `agentdev: repo found but no stack detected — asking you to choose`
+              : `agentdev: greenfield — no code yet, asking you to choose`,
+            "info",
+          );
+        }
         pendingAnswers = await runManualInterview(
           ctx.ui,
           prompt,

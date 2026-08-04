@@ -22,6 +22,8 @@ export const STACK_SIGNATURES: { stack: string; files: string[] }[] = [
   { stack: "python", files: ["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"] },
   { stack: "go", files: ["go.mod"] },
   { stack: "rust", files: ["Cargo.toml"] },
+  { stack: "cplusplus", files: ["CMakeLists.txt", "Makefile", "conanfile.txt"] },
+  { stack: "csharp", files: ["*.csproj", "*.sln"] },
   { stack: "java", files: ["pom.xml", "build.gradle"] },
   { stack: "ruby", files: ["Gemfile"] },
   { stack: "php", files: ["composer.json"] },
