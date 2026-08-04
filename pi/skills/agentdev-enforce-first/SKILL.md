@@ -1,4 +1,3 @@
-# story: e80s01
 ---
 name: agentdev-enforce-first
 model: haiku
