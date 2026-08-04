@@ -127,6 +127,7 @@ describe.skipIf(!enabled || !herdr.present || !serverUp || !gitPresent())(
           reportPath: "",
         }),
         sendToSubleader: () => undefined,
+    steerWorker: () => undefined,
         stageMerge: () => tmpdir(),
         verifyStory: () => ({ ok: true, output: "ok", command: "npm test" }),
         sliceContext: () => "// e2e fixture slice",
@@ -174,6 +175,7 @@ describe.skipIf(!enabled || !herdr.present || !serverUp || !gitPresent())(
         adapter,
         ask: recordedAsk,
         buildStory: () => undefined,
+        steerWorker: () => undefined,
         spawnWorker: (ctx) => ({
           goalId: ctx.goalId,
           storyId: ctx.storyId,

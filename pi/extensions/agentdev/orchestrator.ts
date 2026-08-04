@@ -20,7 +20,7 @@ import type { BackendAdapter } from "./backend-adapter";
 import { detectCodebase } from "./map-codebase";
 import { extractGlossary } from "./define-language";
 import { createInterview, type ConstraintCategory } from "./define-constraints";
-import { createConsensusLoop, isHighRisk, validatePlanOutput, type PlanOutput } from "./ralplan";
+import { createConsensusLoop, isHighRisk, validatePlanOutput, type PlanOutput, type Role } from "./ralplan";
 import { PLANNER_JSON_SCHEMA, FILE_PLAN_INSPECT, RALPLAN_REVISION_HINT } from "./agent-prompts";
 import { planToStories, dispatchPlan, completeWorker, type WorkerAssignment } from "./dispatch";
 import { createWorktreePool, pruneStaleLeases, type WorktreeLeases } from "./worktree";
@@ -91,7 +91,12 @@ export interface OrchestratorPorts {
    * supervised by report files + herdr agent state.
    */
   spawnWorker(ctx: BuildContext): CrewWorker | Promise<CrewWorker>;
-  waitForWorker(w: CrewWorker, opts?: { timeoutMs?: number }): CrewOutcome | Promise<CrewOutcome>;
+  waitForWorker(
+    w: CrewWorker,
+    opts?: { timeoutMs?: number; onStuck?: (minutes: number) => void },
+  ): CrewOutcome | Promise<CrewOutcome>;
+  /** Steering (firstmate model): guidance into the worker's live pane. */
+  steerWorker(w: CrewWorker, text: string): void | Promise<void>;
   /** keepOpen=true leaves the pane up for inspection (fail-closed teardown). */
   teardownWorker(w: CrewWorker, keepOpen?: boolean): void | Promise<void>;
   spawnSubleader(input: {
@@ -143,11 +148,13 @@ interface PersistedGoal {
   storyFiles: Record<string, import("./ralplan").PlanStoryFiles>;
   /** Integration staging worktree (all stories merged, verified, reviewed). */
   stagingWorktree: string | null;
+  /** Operator opted OUT of the mandatory consensus review (fast path). */
+  skipConsensus: boolean;
   gate: GateState | null;
 }
 
 export interface Orchestrator {
-  start(goalText: string): Promise<GoalRun>;
+  start(goalText: string, opts?: { skipConsensus?: boolean }): Promise<GoalRun>;
   resume(goalId: string): Promise<GoalRun>;
   resumeAll(): Promise<GoalRun[]>;
   confirm(goalId: string, ok: boolean): void;
@@ -157,6 +164,49 @@ export interface Orchestrator {
   acceptLeaderPlanForLatest(plan: PlanOutput | null, stack?: string | null): void;
   status(goalId: string): GoalRun | null;
   all(): GoalRun[];
+}
+
+/**
+ * PROJECTS BOARD (firstmate bearings-snapshot): one bounded line per active
+ * goal — id, project text, step, story count, last report headline. Injected
+ * into the leader's system prompt each turn so it holds context of ALL its
+ * projects without transcripts (context cost = O(goals), not O(conversation)).
+ */
+export function projectsBoard(cwd: string, limit = 10): string {
+  const dir = join(cwd, ".agentdev", "goals");
+  const ids = readdirSafe(dir);
+  const goals = ids
+    .map((id) => {
+      const p = readJson<PersistedGoal>(stateFile(join(dir, id)));
+      if (!p) return null;
+      // newest report headline (first non-empty line)
+      let headline = "";
+      try {
+        const reports = readdirSync(join(dir, id, "reports")).sort().reverse();
+        for (const r of reports.slice(0, 3)) {
+          const first = readFileSync(join(dir, id, "reports", r), "utf8").split("\n").find((l) => l.trim());
+          if (first?.trim()) {
+            headline = first.trim().slice(0, 90);
+            break;
+          }
+        }
+      } catch {
+        /* no reports yet */
+      }
+      return {
+        id: p.goalId,
+        text: p.goalText.slice(0, 48),
+        step: p.step,
+        stories: Object.keys(p.storyCriteria).length,
+        headline,
+      };
+    })
+    .filter((g): g is NonNullable<typeof g> => g !== null)
+    .slice(0, limit);
+  if (goals.length === 0) return "(no goals yet)";
+  return goals
+    .map((g) => `- ${g.id} · "${g.text}" · step=${g.step} · stories=${g.stories}${g.headline ? ` · last: "${g.headline}"` : ""}`)
+    .join("\n");
 }
 
 const goalDir = (cwd: string, goalId: string): string => join(cwd, ".agentdev", "goals", goalId);
@@ -329,6 +379,7 @@ export function createOrchestrator(
     // Leader handoff (AC-LEADER-1): in prod wiring the interactive turn IS the
     // planning step. Accept its plan and skip the headless consensus loop;
     // timeout or unparseable output falls back to consensus.
+    let leaderPlan: PlanOutput | null = null;
     if (waitForLeaderPlan && liveGoals.has(p.goalId)) {
       const handoff = await new Promise<LeaderHandoff>((resolve) => {
         const buffered = bufferedHandoff;
@@ -343,7 +394,7 @@ export function createOrchestrator(
         }, leaderPlanTimeoutMs);
         leaderWaiters.set(p.goalId, { resolve, timer });
       });
-      const leaderPlan = handoff.plan;
+      leaderPlan = handoff.plan;
       // researched stack (choose-stack research path) applies even when the
       // plan fails validation — consensus then plans with the real stack
       if (p.stack === "research" && handoff.stack) {
@@ -351,58 +402,86 @@ export function createOrchestrator(
         ports.notify(`agentdev: researched stack → ${p.stack}`);
         persist(p);
       }
-      if (leaderPlan && validatePlanOutput(leaderPlan, { deliberate }).ok) {
+      // ralplan is MANDATORY by default: the leader plan seeds the consensus
+      // loop as round-1 draft (Planner refines, doesn't re-draft). Only an
+      // explicit operator opt-out (consensus dialog → no-fast) skips it.
+      if (p.skipConsensus && leaderPlan && validatePlanOutput(leaderPlan, { deliberate }).ok) {
         p.plan = leaderPlan;
         p.approved = true;
         p.step = "dispatch";
         persist(p);
-        ports.notify(`agentdev: leader plan approved (${p.goalId}) — handing off to subleader`);
+        ports.notify(`agentdev: leader plan approved (${p.goalId}) — consensus skipped by operator`);
         return;
       }
-      ports.notify(
-        leaderPlan
-          ? `agentdev: leader plan failed validation — running consensus planning`
-          : `agentdev: no leader plan (timeout) — running consensus planning`,
-        "warning",
-      );
+      if (leaderPlan) {
+        ports.notify(
+          validatePlanOutput(leaderPlan, { deliberate }).ok
+            ? `agentdev: leader plan seeds consensus review (${p.goalId})`
+            : `agentdev: leader plan failed validation — consensus plans fresh`,
+          "warning",
+        );
+      } else {
+        ports.notify(`agentdev: no leader plan (timeout) — consensus plans fresh`, "warning");
+      }
     }
     const loop = createConsensusLoop();
+    // SEEDING (mandatory consensus): the leader's validated plan becomes the
+    // round-1 draft — the Planner's job is refinement, not drafting.
     let planOutput: PlanOutput | null = null;
+    const seed = leaderPlan && validatePlanOutput(leaderPlan, { deliberate }).ok ? JSON.stringify(leaderPlan) : null;
+    if (seed) {
+      planOutput = leaderPlan;
+      loop.submit({ role: "planner", content: seed });
+    }
     // per-role review history (closed loop: every role's feedback reaches the
     // next planner revision AND the critic sees the architect/developer reviews)
     const critiques: string[] = [];
     const developerReviews: string[] = [];
     const architectReviews: string[] = [];
     let guard = 0;
-    while (loop.state().expectedRole !== null && guard < 25) {
-      const role = loop.state().expectedRole;
-      if (role === null) break;
+    const ROLE_PROMPT: Record<string, (hint: string) => string> = {
+      planner: (hint) =>
+        `You are the Planner in a consensus-planning loop. ${goalLineOf()}Emit ONLY JSON: ${PLANNER_JSON_SCHEMA}. No prose. ${FILE_PLAN_INSPECT}${hint}`,
+      architect: (hint) =>
+        `You are the Architect in a consensus-planning loop (oh-my-claudecode style). Review the plan for architectural soundness. NEVER rubber-stamp the favored direction: give the strongest steelman ANTITHESIS, at least one real TRADEOFF TENSION, and a SYNTHESIS when feasible. Reply: "SOUND" or "NEEDS WORK" first line, then ANTITHESIS:/TRADEOFF:/SYNTHESIS: lines (concrete, short).${hint}`,
+      developer: (hint) =>
+        `You are the Developer in a consensus-planning loop. Review the plan for PRACTICAL FEASIBILITY, EFFICIENCY (smallest plan that satisfies the criteria — no gold-plating, no over-engineering) and RELIABILITY (error handling, edge cases, failure modes covered). Reply: "FEASIBLE" or "RISKY" first line, then EFFICIENCY:/RELIABILITY:/RISK: lines (concrete, short).${hint}`,
+      critic: (hint) =>
+        `You are the Critic — the final quality gate in a consensus-planning loop. A false approval costs 10-100x a false rejection; a false rejection wastes a round. Evaluate testable criteria, concrete verification, granular filePlan (vague paths are BLOCKING), and GAP ANALYSIS (what is MISSING). SELF-AUDIT: drop low-confidence findings. Concrete fix per blocking finding. Reply with EXACTLY one of "APPROVE", "ITERATE", "REJECT" and 1-3 short findings with fixes.${hint}`,
+    };
+    const goalLineOf = (): string =>
+      critiques.length === 0 ? `Goal: "${p.goalText}"${p.stack ? ` (stack: ${p.stack})` : ""}. ` : "";
+    const hintFor = (role: Role): string => {
       const planCtx = planOutput ? JSON.stringify(planOutput).slice(0, 1500) : "(none)";
-      const goalLine =
-        role === "planner" && critiques.length === 0
-          ? `Goal: "${p.goalText}"${p.stack ? ` (stack: ${p.stack})` : ""}. `
-          : "";
-      const hint =
-        role === "planner" && critiques.length > 0
-          ? RALPLAN_REVISION_HINT([
-              ...(architectReviews.length > 0 ? [{ role: "architect", content: architectReviews[architectReviews.length - 1]! }] : []),
-              ...(developerReviews.length > 0 ? [{ role: "developer", content: developerReviews[developerReviews.length - 1]! }] : []),
-              { role: "critic", content: critiques[critiques.length - 1]! },
-            ])
-          : role === "critic" && critiques.length > 0
-            ? `\nCurrent plan: ${planCtx}\nArchitect review:\n${architectReviews[architectReviews.length - 1] ?? "(none)"}\nDeveloper review:\n${developerReviews[developerReviews.length - 1] ?? "(none)"}\nYour previous critique was:\n${critiques[critiques.length - 1]}\nVerify EVERY point you raised is addressed. APPROVE only if all are addressed and no new blocking issues.`
-            : role !== "planner"
-              ? `\nCurrent plan: ${planCtx}`
-              : "";
-      let out = await ports.ask(
-        role === "planner"
-          ? `You are the Planner in a consensus-planning loop. ${goalLine}Emit ONLY JSON: ${PLANNER_JSON_SCHEMA}. No prose. ${FILE_PLAN_INSPECT}${hint}`
-          : role === "architect"
-            ? `You are the Architect in a consensus-planning loop (oh-my-claudecode style). Review the plan for architectural soundness. NEVER rubber-stamp the favored direction: give the strongest steelman ANTITHESIS, at least one real TRADEOFF TENSION, and a SYNTHESIS when feasible. Reply: "SOUND" or "NEEDS WORK" first line, then ANTITHESIS:/TRADEOFF:/SYNTHESIS: lines (concrete, short).${hint}`
-            : role === "developer"
-              ? `You are the Developer in a consensus-planning loop. Review the plan for PRACTICAL FEASIBILITY, EFFICIENCY (smallest plan that satisfies the criteria — no gold-plating, no over-engineering) and RELIABILITY (error handling, edge cases, failure modes covered). Reply: "FEASIBLE" or "RISKY" first line, then EFFICIENCY:/RELIABILITY:/RISK: lines (concrete, short).${hint}`
-              : `You are the Critic — the final quality gate in a consensus-planning loop. A false approval costs 10-100x a false rejection; a false rejection wastes a round. Evaluate testable criteria, concrete verification, granular filePlan (vague paths are BLOCKING), and GAP ANALYSIS (what is MISSING). SELF-AUDIT: drop low-confidence findings. Concrete fix per blocking finding. Reply with EXACTLY one of "APPROVE", "ITERATE", "REJECT" and 1-3 short findings with fixes.${hint}`,
-      );
+      if (role === "planner" && critiques.length > 0) {
+        return RALPLAN_REVISION_HINT([
+          ...(architectReviews.length > 0 ? [{ role: "architect", content: architectReviews[architectReviews.length - 1]! }] : []),
+          ...(developerReviews.length > 0 ? [{ role: "developer", content: developerReviews[developerReviews.length - 1]! }] : []),
+          { role: "critic", content: critiques[critiques.length - 1]! },
+        ]);
+      }
+      if (role === "critic" && critiques.length > 0) {
+        return `\nCurrent plan: ${planCtx}\nArchitect review:\n${architectReviews[architectReviews.length - 1] ?? "(none)"}\nDeveloper review:\n${developerReviews[developerReviews.length - 1] ?? "(none)"}\nYour previous critique was:\n${critiques[critiques.length - 1]}\nVerify EVERY point you raised is addressed. APPROVE only if all are addressed and no new blocking issues.`;
+      }
+      return role === "planner" ? "" : `\nCurrent plan: ${planCtx}`;
+    };
+    while (loop.state().pendingRoles.length > 0 && guard < 25) {
+      const pending = loop.state().pendingRoles;
+      if (pending.length === 2 && pending.includes("architect") && pending.includes("developer")) {
+        // PARALLEL pair — independent reviews of the same draft
+        const [aOut, dOut] = await Promise.all([
+          ports.ask(ROLE_PROMPT.architect(hintFor("architect"))),
+          ports.ask(ROLE_PROMPT.developer(hintFor("developer"))),
+        ]);
+        architectReviews.push(aOut);
+        developerReviews.push(dOut);
+        loop.submit({ role: "architect", content: aOut });
+        loop.submit({ role: "developer", content: dOut });
+        guard += 1;
+        continue;
+      }
+      const role = pending[0]!;
+      let out = await ports.ask(ROLE_PROMPT[role](hintFor(role)));
       if (role === "planner") {
         planOutput = parsePlanOutput(out);
         if (!planOutput) {
@@ -415,12 +494,6 @@ export function createOrchestrator(
       } else if (role === "critic") {
         critiques.push(out);
         loop.submit({ role, content: out, verdict: criticVerdict(out) });
-      } else if (role === "architect") {
-        architectReviews.push(out);
-        loop.submit({ role, content: out });
-      } else if (role === "developer") {
-        developerReviews.push(out);
-        loop.submit({ role, content: out });
       } else {
         loop.submit({ role, content: out });
       }
@@ -532,12 +605,14 @@ export function createOrchestrator(
       } catch {
         /* node may not exist in resumed runs */
       }
-      const outcome = await ports.waitForWorker(worker);
+      const outcome = await ports.waitForWorker(worker, {
+        onStuck: (min) =>
+          ports.notify(`agentdev: ${w.storyId} worker silent ${min} min — status check`, "warning"),
+      });
       if (outcome !== "done") {
-        // A worker may BLOCK on a cross-story dependency (its tests need a
-        // sibling's file it must not touch) while still delivering committed
-        // work. That belongs to the INTEGRATION phase — merge it and let the
-        // integration verify + fix worker resolve it. Only no-work blocks fail.
+        // STEERING first (firstmate stuck-crewmate-recovery): a blocked worker
+        // with committed work gets guidance INTO its live pane — same worktree,
+        // same brief contract — up to 2 steers. Only then does it escalate.
         const hasWork = worktreeHasWork(w.worktreePath, baseRepo);
         if (!hasWork) {
           ports.notify(
@@ -546,11 +621,33 @@ export function createOrchestrator(
           );
           throw new Error(`subworker ${w.storyId} ${outcome} (no work delivered)`);
         }
-        ports.notify(
-          `agentdev: ${w.storyId} worker ${outcome} but committed — integration will validate`,
-          "warning",
-        );
-        await ports.teardownWorker(worker, true); // keep the pane for inspection
+        const summary = readWorkerReportSafe(worker.reportPath);
+        let steered = false;
+        for (let steer = 1; steer <= 2; steer += 1) {
+          await ports.steerWorker(
+            worker,
+            `Your report says: ${summary.slice(0, 800)}\n\nResolve the blocker: ${outcome === "blocked" ? "complete the story per your brief" : "the story is incomplete — finish it"}. Fix in your worktree, COMMIT again, and rewrite the report.`,
+          );
+          const again = await ports.waitForWorker(worker, {
+            timeoutMs: 1_800_000,
+            onStuck: (min) =>
+              ports.notify(`agentdev: ${w.storyId} steered worker silent ${min} min`, "warning"),
+          });
+          if (again === "done") {
+            steered = true;
+            break;
+          }
+          ports.notify(`agentdev: ${w.storyId} steer ${steer} did not resolve (${again})`, "warning");
+        }
+        if (steered) {
+          await ports.teardownWorker(worker);
+        } else {
+          ports.notify(
+            `agentdev: ${w.storyId} worker still ${outcome} after steering — integration will validate`,
+            "warning",
+          );
+          await ports.teardownWorker(worker, true); // keep the pane for inspection
+        }
       } else {
         await ports.teardownWorker(worker); // delivered → close the pane
       }
@@ -787,7 +884,7 @@ export function createOrchestrator(
   // ---- public API ----
 
   return {
-    async start(goalText: string): Promise<GoalRun> {
+    async start(goalText: string, startOpts: { skipConsensus?: boolean } = {}): Promise<GoalRun> {
       if (!goalText.trim()) throw new Error("goal must be non-empty");
       const goalId = `goal-${Date.now().toString(36)}`;
       const p: PersistedGoal = {
@@ -803,6 +900,7 @@ export function createOrchestrator(
         storyCriteria: {},
         storyFiles: {},
         stagingWorktree: null,
+        skipConsensus: startOpts.skipConsensus ?? false,
         gate: null,
       };
       liveGoals.add(goalId); // the interactive leader turn will hand its plan
@@ -1046,6 +1144,14 @@ function currentBranchOf(worktree: string): string | null {
     );
   } catch {
     return null;
+  }
+}
+
+function readWorkerReportSafe(path: string): string {
+  try {
+    return readFileSync(path, "utf8").slice(0, 2000);
+  } catch {
+    return "";
   }
 }
 

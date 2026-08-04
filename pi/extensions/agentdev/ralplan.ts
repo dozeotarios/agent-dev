@@ -9,6 +9,9 @@
  */
 
 export type Role = "planner" | "architect" | "developer" | "critic";
+
+/** Architect and Developer run as a PARALLEL pair — either may submit first. */
+const PAIR: Role[] = ["architect", "developer"];
 export type Verdict = "approve" | "iterate" | "reject";
 
 export type AgentOutput =
@@ -23,6 +26,9 @@ export interface VerdictRecord {
 
 export interface ConsensusState {
   round: number;
+  /** Roles still owed this phase; length 2 = the architect∥developer pair. */
+  pendingRoles: Role[];
+  /** First pending role (back-compat for sequential drivers/tests). */
   expectedRole: Role | null;
   approved: boolean;
   exhausted: boolean;
@@ -47,7 +53,7 @@ const ROLE_ORDER: Role[] = ["planner", "architect", "developer", "critic"];
 
 export function createConsensusLoop(maxRounds = 5): ConsensusLoop {
   let round = 1;
-  let expectedRole: Role | null = "planner";
+  let pendingRoles: Role[] = ["planner"];
   let currentPlan: string | null = null;
   let bestPlan: string | null = null;
   let approved = false;
@@ -57,7 +63,8 @@ export function createConsensusLoop(maxRounds = 5): ConsensusLoop {
 
   const state = (): ConsensusState => ({
     round,
-    expectedRole,
+    pendingRoles: [...pendingRoles],
+    expectedRole: pendingRoles[0] ?? null,
     approved,
     exhausted,
     roundsUsed: round,
@@ -68,21 +75,20 @@ export function createConsensusLoop(maxRounds = 5): ConsensusLoop {
   return {
     state,
     submit(output) {
-      if (expectedRole === null) {
+      if (pendingRoles.length === 0) {
         throw new Error("consensus already finished");
       }
-      if (output.role !== expectedRole) {
-        throw new Error(`expected ${expectedRole}, got ${output.role}`);
+      if (!pendingRoles.includes(output.role)) {
+        throw new Error(`expected ${pendingRoles.join(" or ")}, got ${output.role}`);
       }
+      pendingRoles = pendingRoles.filter((r) => r !== output.role);
       if (output.role === "planner") {
         if (!output.content.trim()) throw new Error("planner output must not be empty");
         currentPlan = output.content;
         versions.push({ round, content: output.content, verdict: null, findings: [] });
-        expectedRole = "architect";
-      } else if (output.role === "architect") {
-        expectedRole = "developer";
-      } else if (output.role === "developer") {
-        expectedRole = "critic";
+        pendingRoles = [...PAIR]; // architect ∥ developer — either may submit first
+      } else if (PAIR.includes(output.role)) {
+        if (pendingRoles.length === 0) pendingRoles = ["critic"]; // pair complete
       } else if (output.role === "critic") {
         verdicts.push({ round, verdict: output.verdict, findings: output.findings ?? [] });
         const v = versions[versions.length - 1];
@@ -93,17 +99,17 @@ export function createConsensusLoop(maxRounds = 5): ConsensusLoop {
         if (output.verdict === "approve") {
           approved = true;
           bestPlan = currentPlan;
-          expectedRole = null;
+          pendingRoles = [];
         } else if (round >= maxRounds) {
           exhausted = true;
           // NEVER present a critic-REJECTED plan as best: the last ITERATE'd
           // version is the best available; a REJECT-only loop yields null so
           // the caller escalates instead of dispatching a rejected plan.
           bestPlan = pickBest(versions);
-          expectedRole = null;
+          pendingRoles = [];
         } else {
           round += 1;
-          expectedRole = "planner"; // revise
+          pendingRoles = ["planner"]; // revise
         }
       } else {
         throw new Error("unreachable role");

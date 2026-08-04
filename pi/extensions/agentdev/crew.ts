@@ -71,6 +71,15 @@ export function uniqueAgentName(prefix: string, id: string): string {
   return `${base.slice(0, 27)}-${suffix}`;
 }
 
+/** STEERING (firstmate stuck-crewmate-recovery): guidance into the worker's
+ *  live pane — same worktree, same brief contract, new turn. */
+export function steerWorker(adapter: BackendAdapter, w: CrewWorker, guidance: string): void {
+  adapter.agentPrompt(
+    w.name,
+    `STEERING from your Subleader — continue in the SAME worktree (${w.worktree}).\n\n${guidance}\n\nWhen done, REWRITE your report at ${w.reportPath} with the same contract (STORY_DONE / STORY_BLOCKED: <reason>) and reply with exactly one line.`,
+  );
+}
+
 /** Integration-fix brief: the merged suite fails; fix it, report when green. */
 export function fixBrief(
   goalText: string,
@@ -212,12 +221,20 @@ export async function waitForWorker(
   adapter: BackendAdapter,
   w: CrewWorker,
   timeoutMs = 1_800_000,
+  opts: { onStuck?: (minutes: number) => void } = {},
 ): Promise<CrewOutcome> {
   const deadline = Date.now() + timeoutMs;
   // herdr agent states can flap transiently (detection resets, turn boundaries):
   // only a SUSTAINED done (2 consecutive polls) without a report counts as blocked
   let doneStreak = 0;
+  let stuckNotified = false;
   while (Date.now() < deadline) {
+    // WATCHDOG (oh-my-claudecode policy): 5 min silent → status check
+    const elapsedMin = (Date.now() - (deadline - timeoutMs)) / 60_000;
+    if (!stuckNotified && elapsedMin >= 5) {
+      stuckNotified = true;
+      opts.onStuck?.(Math.round(elapsedMin));
+    }
     const report = readFileSafe(w.reportPath);
     if (report) return parseWorkerReport(report).outcome;
     try {

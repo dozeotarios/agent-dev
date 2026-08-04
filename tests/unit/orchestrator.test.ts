@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createOrchestrator, parseLeaderPlanOutput, type OrchestratorPorts } from "../../pi/extensions/agentdev/orchestrator";
+import { createOrchestrator, parseLeaderPlanOutput, projectsBoard, type OrchestratorPorts } from "../../pi/extensions/agentdev/orchestrator";
 import { detectCodebase } from "../../pi/extensions/agentdev/map-codebase";
 import { extractGlossary } from "../../pi/extensions/agentdev/define-language";
 import { planToStories } from "../../pi/extensions/agentdev/dispatch";
@@ -80,6 +80,7 @@ function fakePorts(overrides: Partial<OrchestratorPorts> = {}): OrchestratorPort
       reportPath: "",
     }),
     sendToSubleader: () => undefined,
+    steerWorker: () => undefined,
     stageMerge: () => tmpdir(),
     verifyStory: () => ({ ok: true, output: "ok", command: "npm test" }),
     sliceContext: () => "// fixture code context",
@@ -208,6 +209,31 @@ describe("perform-commit (AC-GIT-1/2/5/8)", () => {
     const r = performCommit(gate, "/wt/a", "msg");
     expect(r.skipped).toBe(true);
     expect(r.hash).toBe("abc123");
+  });
+});
+
+describe("projects board (firstmate bearings-snapshot analog)", () => {
+  it("renders one bounded line per goal with step + report headline", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-board-"));
+    const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+    const gdir = join(cwd, ".agentdev", "goals", "goal-test");
+    mkdirSync(join(gdir, "reports"), { recursive: true });
+    writeFileSync(
+      join(gdir, "goal.json"),
+      JSON.stringify({ goalId: "goal-test", goalText: "build a todo app", step: "review", storyCriteria: { s1: [] }, storyFiles: {}, stagingWorktree: null, skipConsensus: false, gate: null }),
+    );
+    writeFileSync(join(gdir, "reports", "story-1.md"), "STORY_DONE\nbuilt the cli\n");
+    const board = projectsBoard(cwd);
+    expect(board).toContain("goal-test");
+    expect(board).toContain("step=review");
+    expect(board).toContain("STORY_DONE");
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("reports (no goals yet) on an empty project", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-board-empty-"));
+    expect(projectsBoard(cwd)).toContain("no goals");
+    rmSync(cwd, { recursive: true, force: true });
   });
 });
 

@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionUIContext } from "
 import { Type } from "typebox";
 import { parseToggleArg, createToggleState, type ToggleState } from "./toggle";
 import { createGoalRegistry, type GoalRegistry } from "./goals";
-import { createOrchestrator, parseLeaderPlanOutput, parseLeaderStack } from "./orchestrator";
+import { createOrchestrator, parseLeaderPlanOutput, parseLeaderStack, projectsBoard } from "./orchestrator";
 import { createRealPorts, askPi } from "./real-ports";
 import { createHerdrAdapter } from "./backend-adapter";
 import { detectCodebase } from "./map-codebase";
@@ -243,6 +243,15 @@ async function runManualInterview(
     const modeLabels = ["direct-PR", "no-mistakes", "local-only", "+yolo"];
     const modePick = await ui.select("Project mode", modeLabels, { timeout: 30_000 });
     answers.set("Project mode", [modePick ?? "direct-PR"]);
+    // ralplan consensus is MANDATORY unless the operator opts out (fast path)
+    const consensusPick = await ui.select("Consensus review of the plan?", [
+      "yes — full review (recommended)",
+      "no — fast, use the plan as-is",
+    ], { timeout: 30_000 });
+    answers.set(
+      "Consensus review of the plan?",
+      [consensusPick === "no — fast, use the plan as-is" ? "no" : "yes"],
+    );
   } catch (e) {
     console.warn(`[agentdev] interview failed (defaults used): ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -502,19 +511,20 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
         );
         const needsResearch = pendingAnswers.get("Choose a stack")?.[0] === "research";
         const o = ensureOrchestrator();
+        const skipConsensus = pendingAnswers.get("Consensus review of the plan?")?.[0] === "no";
         // Defer the pipeline: never run goal setup synchronously inside the
         // hook. The crew must not block the interactive session — the whole
         // point of agentdev is you keep typing while it follows the
         // methodology in the background.
         setImmediate(() => {
-          o.start(prompt).catch((e) => {
+          o.start(prompt, { skipConsensus }).catch((e) => {
             console.error(`[agentdev] goal pipeline failed: ${e instanceof Error ? e.message : String(e)}`);
           });
         });
         // The interactive turn is the LEADER planning turn (AC-LEADER-1): its
         // plan JSON is captured on agent_end and handed to the crew.
         return {
-          systemPrompt: `${event.systemPrompt}\n\n${LEADER_PLAN_PROMPT(
+          systemPrompt: `${event.systemPrompt}\n\nACTIVE PROJECTS BOARD (your other goals — you lead them all):\n${projectsBoard(cwd)}\n\n${LEADER_PLAN_PROMPT(
             manualSummary(pendingAnswers, facts),
             needsResearch,
           )}`,

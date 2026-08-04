@@ -23,6 +23,7 @@ import {
   waitForWorker as crewWaitForWorker,
   teardownWorker as crewTeardownWorker,
   spawnSubleader as crewSpawnSubleader,
+  steerWorker as crewSteerWorker,
   parseWorkerReport,
   readWorkerReport,
   type CrewWorker,
@@ -104,7 +105,12 @@ export function createRealPorts(opts: RealPortsOptions): OrchestratorPorts {
       return crewSpawnWorker(ports.adapter, ctx, { cwd: process.cwd() });
     },
     async waitForWorker(w, opts) {
-      return crewWaitForWorker(ports.adapter, w, opts?.timeoutMs);
+      return crewWaitForWorker(ports.adapter, w, opts?.timeoutMs, {
+        onStuck: opts?.onStuck,
+      });
+    },
+    async steerWorker(w, text) {
+      crewSteerWorker(ports.adapter, w, text);
     },
     async teardownWorker(w, keepOpen) {
       crewTeardownWorker(ports.adapter, w, keepOpen);
