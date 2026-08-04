@@ -55,6 +55,14 @@ export function performCommit(
 
   git(addArgv, { cwd: worktree });
   const identity = opts.user ?? { name: "agentdev", email: "agentdev@local" };
+  // Already-committed (e.g. the rework worker committed its fixes on the
+  // staging branch): a clean tree must not fail the gate — record HEAD.
+  const porcelain = git(["status", "--porcelain"], { cwd: worktree }).trim();
+  if (!porcelain) {
+    const hash = commitHashOf(worktree, git);
+    gate.recordCommit(worktree, hash);
+    return { committed: true, hash, skipped: false };
+  }
   git(
     ["-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`, ...commitArgv],
     { cwd: worktree },
