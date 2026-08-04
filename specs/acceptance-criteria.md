@@ -89,13 +89,13 @@ See §N for the concrete empirical test mapped to each area.
 
 - **AC-RALPLAN-1** — On handoff, the Planner drafts a plan + RALPLAN-DR summary (principles 3–5, top-3 drivers, ≥2 viable options with pros/cons).
 - **AC-RALPLAN-2** — Architect runs after Planner (sequential) and provides a steelman antithesis, ≥1 real tradeoff, and synthesis.
-- **AC-RALPLAN-3** — Senior Dev runs after Architect (sequential) and evaluates practical feasibility, idioms, effort/sequencing, risk.
-- **AC-RALPLAN-4** — Critic runs after Senior Dev (sequential) and returns APPROVE | ITERATE | REJECT against testable acceptance criteria + concrete verification.
-- **AC-RALPLAN-5** — On non-APPROVE, the full loop (Planner revise → Architect → Senior Dev → Critic) repeats, max 5 iterations; on exhaustion the best version is presented.
+- **AC-RALPLAN-3** — Developer runs after Architect (sequential) and evaluates practical feasibility, efficiency, reliability, minimal scope.
+- **AC-RALPLAN-4** — Critic runs after Developer (sequential) and returns APPROVE | ITERATE | REJECT against testable acceptance criteria + concrete verification.
+- **AC-RALPLAN-5** — On non-APPROVE, the full loop (Planner revise → Architect → Developer → Critic) repeats, max 5 iterations; on exhaustion the best version is presented.
 - **AC-RALPLAN-6 (deliberate mode)** — For high-risk signals (auth/security, migrations, destructive changes, prod incidents, compliance/PII, public-API break), deliberate mode auto-enables and adds a pre-mortem (3 scenarios) + expanded test plan (unit/integration/e2e/observability).
 - **AC-RALPLAN-7** — Consensus output includes an ADR (Decision, Drivers, Alternatives, Why, Consequences, Follow-ups) and testable acceptance criteria.
 - **AC-RALPLAN-8 (visibility)** — The consensus loop is streamed in a single live planning pane (role, pass, verdict, iteration N/5, RALPLAN-DR summary).
-- **AC-RALPLAN-9 (separation)** — Planning-time review (Architect/Senior Dev/Critic on the PLAN) is distinct from build-time review (6 lenses on CODE).
+- **AC-RALPLAN-9 (separation)** — Planning-time review (Architect/Developer/Critic on the PLAN) is distinct from build-time review (6 lenses on CODE).
 
 ---
 

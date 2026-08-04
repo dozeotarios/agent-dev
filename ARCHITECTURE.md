@@ -429,7 +429,7 @@ Each phase ships with its tests — **test-first for deterministic logic**. A ph
 | herdr plugin/API churn (young project) | Depend on the stable CLI/socket API first; isolate behind BackendAdapter. |
 | Runaway/failed nodes | Autoclose policy + escalation triggers + attention list + restart-proof state. |
 | Lost/uncommitted work | Git-state map tracked by Leader; commit-ready gate; protected `main`. |
-| Reviewer/role conflation | Two clearly separated review loops (plan vs code); distinct Senior Dev (plan) vs Senior SWE (code). |
+| Reviewer/role conflation | Two clearly separated review loops (plan vs code); distinct Developer (plan) vs Senior SWE (code). |
 | E2E agent tests costly / non-deterministic | E2E nightly + on release only (not per-commit); fixture/recorded agents; `herdr-is-present` guard. |
 | pi-extension test-harness (jiti) friction | Run tests under vitest / pi loader, never plain `node`; harness proven in Phase 1. |
 
