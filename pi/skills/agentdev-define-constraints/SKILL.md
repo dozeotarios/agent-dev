@@ -1,6 +1,6 @@
 ---
 name: agentdev-define-constraints
-description: Option-driven risk interview for agentdev goals — five categories (Do / Don't / Failure modes / Edge cases / Invariants) curated by the operator. Soft-gate: asked on every plan, never silently skipped.
+description: "Option-driven risk interview for agentdev goals — five categories (Do / Don't / Failure modes / Edge cases / Invariants) curated by the operator. Soft-gate: asked on every plan, never silently skipped."
 ---
 
 # agentdev-define-constraints (manual phase — AC-MANUAL-4/5/6)

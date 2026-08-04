@@ -1,6 +1,6 @@
 ---
 name: agentdev-choose-stack
-description: Stack selection for agentdev goals — DETECT greenfield vs brownfield first: brownfield keeps the existing language (locked), greenfield researches the web for the BEST language for the specific use case (performance, domain fit, ecosystem, deploy) and records the pick with rationale.
+description: "Stack selection for agentdev goals — DETECT greenfield vs brownfield first: brownfield keeps the existing language (locked), greenfield researches the web for the BEST language for the specific use case (performance, domain fit, ecosystem, deploy) and records the pick with rationale."
 ---
 
 # agentdev-choose-stack (manual phase — AC-MANUAL-1/2)
