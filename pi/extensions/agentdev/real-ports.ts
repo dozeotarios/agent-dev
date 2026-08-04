@@ -86,7 +86,9 @@ export function createRealPorts(opts: RealPortsOptions): OrchestratorPorts {
   const ports: OrchestratorPorts = {
     adapter: undefined as never, // filled by the extension (single herdr touchpoint)
     async ask(prompt, timeoutMs) {
-      return askPi(prompt, timeoutMs ?? 300_000, piBin);
+      // 10 min default: consensus revisions carry ALL reviews + the plan —
+      // 5 min killed round-5 planner revisions mid-thought (exit 143)
+      return askPi(prompt, timeoutMs ?? 600_000, piBin);
     },
     async buildStory(ctx) {
       // CREW-BACKED (agentdev-style): spawn a real worker pane, supervise it

@@ -473,6 +473,15 @@ export function createOrchestrator(
       if (role === "critic" && critiques.length > 0) {
         return `\nCurrent plan: ${planCtx}\nArchitect review:\n${architectReviews[architectReviews.length - 1] ?? "(none)"}\nDeveloper review:\n${developerReviews[developerReviews.length - 1] ?? "(none)"}\nYour previous critique was:\n${critiques[critiques.length - 1]}\nVerify EVERY point you raised is addressed. APPROVE only if all are addressed and no new blocking issues.`;
       }
+      // PAIR RECHECK: the architect/developer also see their own previous
+      // findings — verify resolved, flag only NEW or still-broken issues
+      if ((role === "architect" || role === "developer") && critiques.length > 0) {
+        const prev = role === "architect" ? architectReviews : developerReviews;
+        const mine = prev[prev.length - 1];
+        if (mine) {
+          return `\nCurrent plan: ${planCtx}\nYour previous review was:\n${mine.slice(0, 800)}\nVerify each point you raised is ADDRESSED in the revised plan. Do NOT re-raise resolved points. Only NEW or still-broken issues count — one line each.`;
+        }
+      }
       return role === "planner" ? "" : `\nCurrent plan: ${planCtx}`;
     };
     while (loop.state().pendingRoles.length > 0 && guard < 25) {
@@ -513,12 +522,15 @@ export function createOrchestrator(
         const effective: "approve" | "iterate" | "reject" =
           verdict === "approve" && !pairClean ? "iterate" : verdict;
         loop.submit({ role, content: out, verdict: effective });
+        const exhausted = loop.state().pendingRoles.length === 0 && !loop.state().approved;
         ports.notify(
           effective === "approve"
             ? `agentdev: CONSENSUS round ${loop.state().round} — Critic APPROVE, Architect SOUND, Developer FEASIBLE (plan approved)`
-            : verdict === "approve"
-              ? `agentdev: CONSENSUS round ${loop.state().round} — Critic approved but ${aLast.startsWith("SOUND") ? "" : "Architect "}${!aLast.startsWith("SOUND") && !dLast.startsWith("FEASIBLE") ? "and " : ""}${dLast.startsWith("FEASIBLE") ? "" : "Developer "}flagged issues → revising`
-              : `agentdev: CONSENSUS round ${loop.state().round} — Critic ${effective.toUpperCase()} → planner revises`,
+            : exhausted
+              ? `agentdev: CONSENSUS round ${loop.state().round} — Critic ${effective.toUpperCase()} at the iteration cap — presenting the best revised plan`
+              : verdict === "approve"
+                ? `agentdev: CONSENSUS round ${loop.state().round} — Critic approved but ${aLast.startsWith("SOUND") ? "" : "Architect "}${!aLast.startsWith("SOUND") && !dLast.startsWith("FEASIBLE") ? "and " : ""}${dLast.startsWith("FEASIBLE") ? "" : "Developer "}flagged issues → revising`
+                : `agentdev: CONSENSUS round ${loop.state().round} — Critic ${effective.toUpperCase()} → planner revises`,
           effective === "approve" ? "info" : "warning",
         );
       } else {
@@ -528,14 +540,28 @@ export function createOrchestrator(
     }
     const s = loop.state();
     if (!s.approved) {
-      throw new Error(
-        `consensus did not approve (${s.roundsUsed} rounds; best=${s.bestPlan ? "presented" : "none"}) — escalate`,
-      );
+      // SEEDED LOOP EXHAUSTION: the plan is the operator's Leader draft —
+      // consensus is VALIDATION. At the iteration cap, present the best
+      // revised version (the reference behavior) instead of failing, with the
+      // remaining reviewer concerns surfaced loudly. An UNSEDED loop (no
+      // draft at all) still fails closed — nothing to present.
+      if (seed && s.bestPlan) {
+        ports.notify(
+          `agentdev: CONSENSUS exhausted after ${s.roundsUsed} rounds — using the best revised plan; reviewer concerns: ${critiques[critiques.length - 1]?.slice(0, 400) ?? "(none)"}`,
+          "warning",
+        );
+      } else {
+        throw new Error(
+          `consensus did not approve (${s.roundsUsed} rounds; best=${s.bestPlan ? "presented" : "none"}) — escalate`,
+        );
+      }
     }
     const parsed = JSON.parse(s.bestPlan!) as PlanOutput;
     if (!validatePlanOutput(parsed, { deliberate }).ok) {
       throw new Error("approved plan failed output validation");
     }
+    // CRASH-SAFE APPROVAL: plan+approved+step land in ONE atomic persist the
+    // moment the loop decides — a crash just after leaves a resumable goal
     p.plan = parsed;
     p.approved = true;
     p.step = "dispatch";
