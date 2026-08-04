@@ -183,11 +183,9 @@ describe("extension entry — index.ts (wiring)", () => {
     expect(leaderPlans).toHaveLength(0);
   });
 
-  it("registers resources_discover for skills", () => {
+  it("does NOT register resources_discover (skills come from the pi manifest — cwd-relative paths caused collisions)", () => {
     const { hooks } = loadExtension();
-    expect(hooks.has("resources_discover")).toBe(true);
-    const skills = hooks.get("resources_discover")!({ prompt: "" }) as { skillPaths: string[] };
-    expect(skills.skillPaths.some((p) => p.includes("agentdev-define-language"))).toBe(true);
+    expect(hooks.has("resources_discover")).toBe(false);
   });
 
   it("registers the agentdev_status tool (AC-TOGGLE-1)", () => {

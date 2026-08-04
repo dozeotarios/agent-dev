@@ -23,21 +23,12 @@ import { createInterview, generateCandidates } from "./define-constraints";
  * - `/agentdev status` lists goals; `/agentdev confirm <goal>` answers the
  *   commit gate; `/agentdev resume` reconciles panes + resumes after restart.
  * - Tools are registered so the Leader can observe the crew (AC-TOGGLE-1).
- * - resources_discover exposes the crew's methodology skills (AC-INSTALL-1).
- *   The agentdev-* skills ship with the package (pi manifest "skills").
+ * - The agentdev-* methodology skills ship with the package and are
+ *   discovered via the pi manifest ("pi.skills") — NO resources_discover
+ *   hook: cwd-relative skill paths made the repo's copy load as project
+ *   scope and collide with the installed package's user-scope copy.
  */
 
-const SKILL_PATHS = [
-  "/pi/skills/agentdev-map-codebase",
-  "/pi/skills/agentdev-choose-stack",
-  "/pi/skills/agentdev-define-language",
-  "/pi/skills/agentdev-define-constraints",
-  "/pi/skills/agentdev-plan",
-  "/pi/skills/agentdev-build",
-  "/pi/skills/agentdev-verify",
-  "/pi/skills/agentdev-review",
-  "/pi/skills/agentdev-commit",
-];
 
 /**
  * Leader-planning prompt (AC-LEADER-1): with the crew ON, the interactive
@@ -410,9 +401,6 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
         }
         orch.acceptLeaderPlanForLatest(plan, stack);
       });
-
-      // AC-INSTALL-1: expose the manual-phase skills to pi.
-      pi.on("resources_discover", () => ({ skillPaths: SKILL_PATHS.map((p) => process.cwd() + p) }));
 
       // AC-TOGGLE-1: orchestration tools are registered (gated on the toggle).
       pi.registerTool({
