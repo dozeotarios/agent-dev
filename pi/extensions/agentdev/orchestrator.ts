@@ -614,9 +614,13 @@ export function createOrchestrator(
           const found: Finding[] = [];
           for (const line of out.split("\n")) {
             const t = line.trim();
-            // reviewers legitimately emit "BLOCKING: (none)" when clean —
-            // that is NOT a finding (was counting as a blocker → phantom loops)
-            if (/^BLOCKING:/i.test(t) && !/^BLOCKING:\s*(none|no blocking|no issues|no findings|nothing|n\/a|n\.a\.|clean|\s*)$/i.test(t)) {
+            // reviewers legitimately emit "BLOCKING: (none — lens clean; all
+            // prior findings resolved...)" when clean — that is NOT a finding
+            // (was counting as a blocker → phantom rework loops)
+            if (
+              /^BLOCKING:/i.test(t) &&
+              !/^BLOCKING:\s*\(?\s*(?:none|no blocking|no issues|no findings|nothing|n\/a|n\.a\.|clean|all prior|remain resolved|no new|\s*)/i.test(t)
+            ) {
               found.push({ lens, severity: "blocking", text: t, storyId: null });
             } else if (/^NIT:/i.test(t) && !/^NIT:\s*(none|no nits|\s*)$/i.test(t)) {
               found.push({ lens, severity: "nit", text: t, storyId: null });
