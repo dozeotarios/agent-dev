@@ -118,7 +118,7 @@ agentdev --mode rpc get_commands         # scripting / automation
 ```
 MANUAL (you + Leader)                AUTOPILOT (to commit-ready)
   map-codebase / choose-stack   →    ralplan consensus
-  define-language (DDD)               Planner → Architect → Senior Dev → Critic
+  define-language (DDD)               Planner → Architect → Developer → Critic
   define-constraints (risk interview) → dispatch Subleaders → Subworkers build
   pick project mode                   → verify → 6-lens review until clean
                                       → stop at commit-ready → your confirm

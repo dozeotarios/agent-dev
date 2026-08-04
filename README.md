@@ -42,7 +42,7 @@ you pick a stack for a new one), builds a small glossary of the domain, runs
 a risk interview, and asks which project mode you want.
 
 Then the autopilot takes over. A consensus loop with a Planner, an Architect,
-a Senior Dev and a Critic produces a plan. The plan is sliced into stories,
+a Developer and a Critic produces a plan. The plan is sliced into stories,
 and each story gets its own git worktree and a Subworker. Once the code
 builds and the tests pass, six reviewers look at it from different angles:
 code quality, efficiency, security, API shape, reliability and domain. The
