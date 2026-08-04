@@ -6,6 +6,7 @@ import { parseToggleArg, createToggleState, type ToggleState } from "./toggle";
 import { createGoalRegistry, type GoalRegistry } from "./goals";
 import { createOrchestrator, parseLeaderPlanOutput, parseLeaderStack, projectsBoard } from "./orchestrator";
 import { createRealPorts, askPi } from "./real-ports";
+import { reconcileCrewPanes } from "./crew";
 import { createHerdrAdapter } from "./backend-adapter";
 import { detectCodebase } from "./map-codebase";
 import { resolveStackSelection } from "./choose-stack";
@@ -446,6 +447,16 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
               saveToggle(cwd, true); // remember for the next session (AC-TOGGLE-3′)
               uiCtx = ctx.ui; // interactive dialogs from now on
               ensureOrchestrator(); // wire the crew lazily (adapter version-gated)
+              // close orphaned crew panes (dead goals' W:/S: workspaces) so
+              // leftover workers never look like they're launching mid-plan
+              try {
+                const closed = reconcileCrewPanes(adapter, cwd);
+                if (closed > 0) {
+                  ctx.ui.notify(`agentdev: cleaned ${closed} orphaned crew pane(s) from previous goals`, "info");
+                }
+              } catch {
+                /* herdr unavailable — skip cleanup */
+              }
               ctx.ui.notify("agentdev is now ON — every message is a goal (manual phase → autopilot).", "info");
             }
           } else if (arg === "off") {

@@ -89,6 +89,7 @@ export interface BackendAdapter {
   ): string;
   paneGet(paneId: string): PaneInfo;
   paneList(): { paneId: string; workspaceId: string; agentStatus?: string }[];
+  workspaceList(): { workspaceId: string; label: string }[];
   agentWait(paneId: string, opts: WaitOptions): boolean;
   /** Start a supported interactive agent (pi) in an existing pane. */
   agentStart(name: string, kind: string, paneId: string): void;
@@ -363,6 +364,18 @@ export function createHerdrAdapter(
         if (e instanceof HerdrError && e.code === "agent_not_found") return false;
         throw e;
       }
+    },
+
+    workspaceList(): { workspaceId: string; label: string }[] {
+      const raw = run(["workspace", "list"]);
+      const result = parseRpc<{ workspaces: { workspace_id: string; label?: string }[] }>(raw, "workspace list");
+      if (!Array.isArray(result.workspaces)) {
+        throw new HerdrError("invalid_rpc", `workspace list: missing workspaces array: ${raw.slice(0, 200)}`);
+      }
+      return result.workspaces.map((w) => ({
+        workspaceId: w.workspace_id,
+        label: w.label ?? "",
+      }));
     },
 
     agentStart(name: string, kind: string, paneId: string): void {

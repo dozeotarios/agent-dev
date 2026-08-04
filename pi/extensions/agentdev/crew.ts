@@ -11,7 +11,7 @@
  * treehouse; agentdev uses its own worktree pool).
  */
 
-import { readFileSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { BackendAdapter } from "./backend-adapter";
 import type { BuildContext } from "./orchestrator";
@@ -69,6 +69,50 @@ export function uniqueAgentName(prefix: string, id: string): string {
   const base = sanitizeAgentName(prefix, id);
   const suffix = Date.now().toString(36).slice(-4);
   return `${base.slice(0, 27)}-${suffix}`;
+}
+
+/**
+ * ORPHAN-PANE CLEANUP: close crew workspaces (S:/W:) whose pane is NOT
+ * referenced by any persisted goal's fleet. Fail-closed panes from dead
+ * goals accumulate otherwise and look like workers spawning during planning.
+ * Returns the number of workspaces closed.
+ */
+export function reconcileCrewPanes(adapter: BackendAdapter, cwd: string): number {
+  const known = new Set<string>();
+  try {
+    const goalsDir = join(cwd, ".agentdev", "goals");
+    for (const g of readdirSync(goalsDir)) {
+      try {
+        const fleet = JSON.parse(readFileSync(join(goalsDir, g, "fleet.json"), "utf8")) as {
+          nodes?: { paneId?: string | null }[];
+        };
+        for (const n of fleet.nodes ?? []) {
+          if (n.paneId) known.add(n.paneId);
+        }
+      } catch {
+        /* no fleet for this goal */
+      }
+    }
+  } catch {
+    return 0;
+  }
+  let closed = 0;
+  try {
+    for (const ws of adapter.workspaceList()) {
+      if (!/^[WS]:/.test(ws.label)) continue; // crew workspaces only
+      const paneId = `${ws.workspaceId}:p1`;
+      if (known.has(paneId)) continue; // an active goal references it
+      try {
+        adapter.workspaceClose(ws.workspaceId);
+        closed += 1;
+      } catch {
+        /* already gone */
+      }
+    }
+  } catch {
+    /* herdr unavailable — skip */
+  }
+  return closed;
 }
 
 /** STEERING (stuck-crewmate recovery): guidance into the worker's

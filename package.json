@@ -1,6 +1,6 @@
 {
   "name": "@agent-dev/agentdev",
-  "version": "1.3.4",
+  "version": "1.3.5",
   "description": "Hierarchical agent orchestration on herdr \u2014 a pi extension (the brain) driving herdr (the body).",
   "private": false,
   "type": "module",
