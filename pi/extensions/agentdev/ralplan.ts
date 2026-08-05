@@ -231,7 +231,20 @@ export interface PlanScope {
   out: string[];
 }
 
+/** SMARTER-INTENSITY: the leader decides how deep the checks must go. */
+export type ConsensusLevel = "none" | "medium" | "full";
+export type ReviewLevel = "bugs" | "standard" | "full";
+
+export interface PlanIntensity {
+  /** ralplan depth: none = skip, medium = 2 rounds, full = 5 rounds. */
+  consensus: ConsensusLevel;
+  /** review lens set: bugs = correctness only, standard = 4, full = 6. */
+  review: ReviewLevel;
+}
+
 export interface PlanOutput {
+  /** LLM-decided check intensity (small change → none/bugs; big → full/full). */
+  intensity?: PlanIntensity;
   adr: {
     decision: string;
     drivers: string[];

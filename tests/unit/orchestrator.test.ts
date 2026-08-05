@@ -519,6 +519,67 @@ describe("orchestrator (AC-DOD-1): full pipeline with recorded agents", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
+  it("SMART intensity: consensus=none ships the validated leader plan without the loop", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-smartnone-"));
+    const asks: string[] = [];
+    const base = fakePorts();
+    const planWithIntensity = {
+      ...PLAN,
+      intensity: { consensus: "none" as const, review: "bugs" as const },
+    };
+    const orch = createOrchestrator(
+      {
+        ...base,
+        ask(prompt) {
+          asks.push(prompt);
+          return base.ask(prompt);
+        },
+      },
+      { cwd, createWorktree: fakeWorktree, git: fakeGit, waitForLeaderPlan: true },
+    );
+    const pending = orch.start("smart none goal");
+    orch.acceptLeaderPlanForLatest(planWithIntensity);
+    const run = await pending;
+    expect(run.step).toBe("done");
+    expect(asks.some((a) => /consensus-planning loop/.test(a))).toBe(false);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("SMART review: bugs level runs only correctness lenses", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-bugsreview-"));
+    const asks: string[] = [];
+    const base = fakePorts();
+    const planWithIntensity = {
+      ...PLAN,
+      intensity: { consensus: "full" as const, review: "bugs" as const },
+    };
+    const orch = createOrchestrator(
+      {
+        ...base,
+        ask(prompt) {
+          asks.push(prompt);
+          return base.ask(prompt);
+        },
+      },
+      { cwd, createWorktree: fakeWorktree, git: fakeGit, waitForLeaderPlan: true },
+    );
+    const pending = orch.start("bugs review goal");
+    orch.acceptLeaderPlanForLatest(planWithIntensity);
+    const run = await pending;
+    expect(run.step).toBe("done");
+    // ONLY senior-swe + reliability lenses were asked (bugs level) — the
+    // fake's constraints are never covered, so the loop reworks to the cap
+    const lensAsks = asks.filter((a) => /reviewer in a code review/.test(a));
+    expect(lensAsks.length % 2).toBe(0); // 2 lenses per round
+    expect(lensAsks.some((a) => /senior-swe reviewer/.test(a))).toBe(true);
+    expect(lensAsks.some((a) => /reliability reviewer/.test(a))).toBe(true);
+    expect(lensAsks.some((a) => /security reviewer/.test(a))).toBe(false);
+    expect(lensAsks.some((a) => /efficiency reviewer/.test(a))).toBe(false);
+    expect(lensAsks.some((a) => /api-contract reviewer/.test(a))).toBe(false);
+    expect(lensAsks.some((a) => /domain reviewer/.test(a))).toBe(false);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
   it("skipConsensus: operator opt-out skips the whole loop", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-skip-"));
     const asks: string[] = [];

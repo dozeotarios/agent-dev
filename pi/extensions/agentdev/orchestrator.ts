@@ -24,7 +24,7 @@ import { createConsensusLoop, isHighRisk, validatePlanOutput, type PlanOutput, t
 import { PLANNER_JSON_SCHEMA, FILE_PLAN_INSPECT, RALPLAN_REVISION_HINT } from "./agent-prompts";
 import { planToStories, dispatchPlan, completeWorker, type WorkerAssignment } from "./dispatch";
 import { createWorktreePool, pruneStaleLeases, type WorktreeLeases } from "./worktree";
-import { createReviewLoop, constraintsToChecklist, routeToWorkers, LENSES, type Finding } from "./review";
+import { createReviewLoop, constraintsToChecklist, routeToWorkers, LENSES, type Finding, type LensId } from "./review";
 import { createCommitGate, type CommitGate, type GateState } from "./git-gate";
 import { performCommit } from "./perform-commit";
 import { installCommitHook } from "./hook-commits";
@@ -431,7 +431,24 @@ export function createOrchestrator(
         ports.notify(`agentdev: no leader plan (timeout) — consensus plans fresh`, "warning");
       }
     }
-    const loop = createConsensusLoop();
+    // SMART INTENSITY: the leader decided how deep consensus must go.
+    // none → skip the loop entirely (validated leader plan ships as-is);
+    // medium → at most 2 rounds; full → up to 5. Defaults to full.
+    const consensusLevel: import("./ralplan").ConsensusLevel = p.skipConsensus
+      ? "none"
+      : (leaderPlan?.intensity?.consensus ?? "full");
+    if (consensusLevel === "none") {
+      if (leaderPlan && validatePlanOutput(leaderPlan, { deliberate }).ok) {
+        p.plan = leaderPlan;
+        p.approved = true;
+        p.step = "dispatch";
+        persist(p);
+        ports.notify(`agentdev: leader plan approved — consensus skipped (smart: none)`);
+        return;
+      }
+      ports.notify(`agentdev: smart consensus=none but leader plan invalid — running full review`, "warning");
+    }
+    const loop = createConsensusLoop(consensusLevel === "medium" ? 2 : 5);
     // SEEDING (mandatory consensus): the leader's validated plan becomes the
     // round-1 draft — the Planner's job is refinement, not drafting.
     let planOutput: PlanOutput | null = null;
@@ -795,6 +812,17 @@ export function createOrchestrator(
     const checklist = constraintsToChecklist(p.constraints);
     const loop = createReviewLoop(5);
     const reviewWorktree = p.stagingWorktree ?? cwd;
+    // SMART REVIEW: the leader chose the lens set — bugs (correctness only),
+    // standard (4), or full (6). Defaults to full when undecided.
+    const reviewLevel: import("./ralplan").ReviewLevel =
+      p.plan?.intensity?.review ?? "full";
+    const activeLenses: LensId[] =
+      reviewLevel === "bugs"
+        ? ["senior-swe", "reliability"]
+        : reviewLevel === "standard"
+          ? ["senior-swe", "reliability", "security", "domain"]
+          : [...LENSES];
+    ports.notify(`agentdev: review with ${activeLenses.length} lens(es) (smart: ${reviewLevel})`);
     let round = 1;
     let previousBlocking: string[] = [];
     while (!loop.isComplete() && round <= 6) {
@@ -809,7 +837,7 @@ export function createOrchestrator(
         ? `\n\nTOUCH-PLAN (SCOPE BOUNDARY — binding):\nstructure: ${p.plan.filePlan.structure}\ncreate: ${p.plan.filePlan.create.join(", ")}\nmodify: ${p.plan.filePlan.modify.join(", ")}\ndoNotTouch: ${p.plan.filePlan.doNotTouch.join(", ")}\nAny work touching files outside this map is a BLOCKING scope violation.`
         : "";
       const lensRounds = await Promise.all(
-        LENSES.map(async (lens) => {
+        activeLenses.map(async (lens) => {
           const ctx = await ports.sliceContext(reviewWorktree, lens);
           const out = await ports.ask(
             `You are the ${lens} reviewer in a code review (agentdev-review). Validate the code against this operator-defined checklist:\n${(checklist[lens] ?? []).map((c) => `- ${c}`).join("\n")}\n\nFind BLOCKING issues. Reply with findings, one per line, each starting with exactly "BLOCKING: " or "NIT: ":\n\n${ctx.slice(0, 12_000)}${scope}${prev}`,
@@ -1099,6 +1127,16 @@ function parsePlanOutput(json: string): PlanOutput | null {
             doNotTouch: Array.isArray(j.filePlan.doNotTouch) ? j.filePlan.doNotTouch.map(String) : [],
           }
         : { structure: "", create: [], modify: [], doNotTouch: [] },
+      intensity: j.intensity
+        ? {
+            consensus: ["none", "medium", "full"].includes(String(j.intensity.consensus))
+              ? (String(j.intensity.consensus) as import("./ralplan").ConsensusLevel)
+              : "full",
+            review: ["bugs", "standard", "full"].includes(String(j.intensity.review))
+              ? (String(j.intensity.review) as import("./ralplan").ReviewLevel)
+              : "full",
+          }
+        : undefined,
       architecture: j.architecture
         ? {
             stack: String(j.architecture.stack ?? ""),

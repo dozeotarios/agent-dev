@@ -67,6 +67,7 @@ REPORT YOUR SEARCH VISIBLY FIRST: before the JSON block, write 2-4 lines startin
   "drivers": [exactly 3 strings],
   "options": [ {"name": string, "pros": [strings], "cons": [strings]} x at least 2 ],
   "adr": { "decision": string, "drivers": [strings], "alternatives": [strings], "why": string, "consequences": [strings], "followups": [strings] },
+  "intensity": { "consensus": "none" | "medium" | "full", "review": "bugs" | "standard" | "full" },
   "architecture": { "stack": string, "notes": string, "risks": [strings] },
   "glossary": [ { "term": string, "definition": string } ],
   "scope": { "in": [strings], "out": [strings] },
@@ -81,6 +82,12 @@ REPORT YOUR SEARCH VISIBLY FIRST: before the JSON block, write 2-4 lines startin
 }
 
 Rules:
+- intensity is YOUR smart decision about how deep the checks must go:
+  consensus none = trivial/isolated change (skip review loop), medium = 2 rounds,
+  full = deep review. review bugs = correctness only (tiny changes), standard =
+  4 lenses, full = all 6. A small addition to an existing codebase should be
+  none/medium + bugs — only big/risky features need full/full. Default: full/full
+  when you are unsure.
 - filePlan is MANDATORY and GRANULAR: if the repo has code, inspect its real layout first (read-only tools allowed: ls/read/grep/find) and anchor every path in it. Files, not vague directories — include tests/configs. Explicitly list what you will NOT touch.
 - stories SPLIT the work; the worker count = stories.length (split by how much work the plan has). HARD RULE: no file may appear in the create/modify of TWO different stories — if two pieces of work touch the same file, they are ONE story.
 - acceptanceCriteria must be concrete, testable statements (they become the stories your Subworkers build and verify).
@@ -247,15 +254,15 @@ async function runManualInterview(
     const modeLabels = ["direct-PR", "no-mistakes", "local-only", "+yolo"];
     const modePick = await ui.select("Project mode", modeLabels, { timeout: 30_000 });
     answers.set("Project mode", [modePick ?? "direct-PR"]);
-    // ralplan consensus is MANDATORY unless the operator opts out (fast path)
-    const consensusPick = await ui.select("Consensus review of the plan?", [
-      "yes — full review (recommended)",
-      "no — fast, use the plan as-is",
+    // CHECK DEPTH — smart default (the leader decides per goal), operator can
+    // override: none (skip ralplan), medium, or full
+    const depthPick = await ui.select("Check depth for this goal?", [
+      "smart — let the leader decide (recommended)",
+      "none — no consensus review",
+      "medium — light review",
+      "full — deep review",
     ], { timeout: 30_000 });
-    answers.set(
-      "Consensus review of the plan?",
-      [consensusPick === "no — fast, use the plan as-is" ? "no" : "yes"],
-    );
+    answers.set("Check depth for this goal?", [depthPick ?? "smart"]);
   } catch (e) {
     console.warn(`[agentdev] interview failed (defaults used): ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -544,7 +551,7 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
           "info",
         );
         const o = ensureOrchestrator();
-        const skipConsensus = pendingAnswers.get("Consensus review of the plan?")?.[0] === "no";
+        const skipConsensus = pendingAnswers.get("Check depth for this goal?")?.[0] === "none — no consensus review";
         // Defer the pipeline: never run goal setup synchronously inside the
         // hook. The crew must not block the interactive session — the whole
         // point of agentdev is you keep typing while it follows the
