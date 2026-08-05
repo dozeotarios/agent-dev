@@ -682,6 +682,20 @@ describe("orchestrator (AC-DOD-1): full pipeline with recorded agents", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
+  it("INTAKE answers reach the leader prompt (debug: symptom/repro/scope)", async () => {
+    // covered at the index layer: manualSummary includes intake: keys
+    const { manualSummary } = await import("../../pi/extensions/agentdev/index");
+    const answers = new Map<string, string[]>([
+      ["intake:0", ["a) every time"]],
+      ["intake:1", ["c) Safari only"]],
+      ["depth", ["quick — fastest reasonable look"]],
+    ]);
+    const summary = manualSummary(answers, { existingRepo: true, stack: "typescript" });
+    expect(summary).toContain("every time");
+    expect(summary).toContain("Safari only");
+    expect(summary).toContain("depth: quick");
+  });
+
   it("skipConsensus: operator opt-out skips the whole loop", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-skip-"));
     const asks: string[] = [];

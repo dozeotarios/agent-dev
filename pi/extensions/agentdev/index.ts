@@ -315,7 +315,7 @@ async function runManualInterview(
   return answers;
 }
 
-function manualSummary(answers: Map<string, string[]>, facts: { existingRepo: boolean; stack: string | null }): string {
+export function manualSummary(answers: Map<string, string[]>, facts: { existingRepo: boolean; stack: string | null }): string {
   const stack = answers.get("Choose a stack")?.[0] ?? facts.stack ?? "(auto)";
   const mode = answers.get("Project mode")?.[0] ?? "direct-PR";
   const constraints = [...answers.entries()]
@@ -324,7 +324,11 @@ function manualSummary(answers: Map<string, string[]>, facts: { existingRepo: bo
   const clarifications = [...answers.entries()]
     .filter(([k]) => k.startsWith("clarify:"))
     .map(([k, v]) => `Q${k.slice("clarify:".length)}: ${(v ?? []).join(" | ") || "(no answer)"}`);
-  return `stack: ${stack} | mode: ${mode} | constraints: ${constraints.length > 0 ? constraints.join(", ") : "none selected"}${clarifications.length > 0 ? ` | clarifications: ${clarifications.join(" ; ")}` : ""}`;
+  const intake = [...answers.entries()]
+    .filter(([k]) => k.startsWith("intake:"))
+    .map(([k, v]) => `Q${k.slice("intake:".length)}: ${(v ?? []).join(" | ") || "(no answer)"}`);
+  const depth = answers.get("depth")?.[0];
+  return `stack: ${stack} | mode: ${mode} | constraints: ${constraints.length > 0 ? constraints.join(", ") : "none selected"}${clarifications.length > 0 ? ` | clarifications: ${clarifications.join(" ; ")}` : ""}${intake.length > 0 ? ` | intake: ${intake.join(" ; ")}` : ""}${depth ? ` | depth: ${depth}` : ""}`;
 }
 
 /** Last assistant text from an agent_end message list (string or blocks). */
@@ -406,8 +410,7 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
   let uiCtx: ExtensionUIContext | null = null;
   /** Precomputed interview answers (interactive manual phase, AC-MANUAL-*). */
   let pendingAnswers = new Map<string, string[]>();
-  /** Auto-detected intent of the current message (build/debug/audit/investigate). */
-  let pendingIntent: Intent = "build";
+
 
   const ensureOrchestrator = (): ReturnType<typeof createOrchestrator> => {
     if (orch) return orch;
@@ -588,7 +591,6 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
           prompt,
           opts.intentClassifier ?? classifyWithPi((p2, t) => askPi(p2, t)),
         );
-        pendingIntent = intent.intent;
         if (intent.intent !== "build") {
           ctx.ui.notify(`agentdev: intent detected → ${intent.intent.toUpperCase()} (${intent.source})`, "info");
           pendingAnswers = await runIntakeInterview(ctx.ui, prompt, intent.intent);

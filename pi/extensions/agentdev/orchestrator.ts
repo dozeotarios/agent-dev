@@ -1202,7 +1202,9 @@ export function createOrchestrator(
         // A follow-up agent_end (tool-loop continuation) delivers null with no
         // waiter pending — buffering it would poison the NEXT goal's waiter
         // (stale "no plan" consumed instead of waiting for its own plan).
-        if (plan !== null || stack !== null || text !== null) {
+        // TEXT-ONLY handoffs are never buffered either: a stale report text
+        // must not become the next debug/audit goal's deliverable.
+        if (plan !== null || stack !== null) {
           bufferedHandoff = { plan, stack, text }; // consumed by the next waiter (race)
         }
         return;
