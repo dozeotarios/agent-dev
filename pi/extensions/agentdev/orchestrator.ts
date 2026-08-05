@@ -556,10 +556,26 @@ export function createOrchestrator(
         );
       }
     }
-    const parsed = JSON.parse(s.bestPlan!) as PlanOutput;
-    if (!validatePlanOutput(parsed, { deliberate }).ok) {
-      throw new Error("approved plan failed output validation");
+    // EXHAUSTION FALLBACK: the best revised plan can be invalid (a weak
+    // revision) — the SEED is always valid (it passed validation to seed),
+    // so fall back to it instead of failing the goal.
+    let finalPlan = s.bestPlan;
+    if (finalPlan) {
+      try {
+        const probe = JSON.parse(finalPlan) as PlanOutput;
+        if (!validatePlanOutput(probe, { deliberate }).ok) finalPlan = null;
+      } catch {
+        finalPlan = null;
+      }
     }
+    if (!finalPlan && seed) {
+      finalPlan = seed;
+      ports.notify(`agentdev: best revised plan invalid — falling back to the leader's original plan`, "warning");
+    }
+    if (!finalPlan) {
+      throw new Error("no valid plan to approve (consensus produced none)");
+    }
+    const parsed = JSON.parse(finalPlan) as PlanOutput;
     // CRASH-SAFE APPROVAL: plan+approved+step land in ONE atomic persist the
     // moment the loop decides — a crash just after leaves a resumable goal
     p.plan = parsed;
