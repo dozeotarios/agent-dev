@@ -7,6 +7,7 @@ import { createGoalRegistry, type GoalRegistry } from "./goals";
 import { createOrchestrator, parseLeaderPlanOutput, parseLeaderStack, projectsBoard } from "./orchestrator";
 import { createRealPorts, askPi } from "./real-ports";
 import { reconcileCrewPanes } from "./crew";
+import { detectIntent, classifyWithPi, type Intent } from "./intent";
 import { createHerdrAdapter } from "./backend-adapter";
 import { detectCodebase } from "./map-codebase";
 import { resolveStackSelection } from "./choose-stack";
@@ -38,6 +39,14 @@ import { createInterview, generateCandidates, CATEGORY_ORDER, type CategoryCandi
  * needsResearch = the operator chose the web-research stack path;
  * techniquesResearch = the operator wants up-to-date technique research.
  */
+/** Leader prompt for non-build intents: debug / audit / investigate. */
+const LEADER_INTAKE_PROMPT = (intent: Intent, intake: string, goal: string): string =>
+  intent === "debug"
+    ? `You are the LEADER investigating a BUG report. DO NOT write a plan — INVESTIGATE.\n\nBUG REPORT: ${goal.slice(0, 3000)}\n\nINTAKE ANSWERS:\n${intake}\n\nUse read-only tools to trace the code path, form hypotheses, and verify each with file:line evidence. Then reply with:\nROOTCAUSE: <one line>\nEVIDENCE: <file:line + why it breaks>\nFIXPLAN: <files to change + what to change + why>\n(or, if the report is not fixable from the repo alone: NO_FIX: <what is missing>)`
+    : intent === "audit"
+      ? `You are the LEADER AUDITING existing code. DO NOT write a plan and DO NOT change code — produce a FINDINGS REPORT.\n\nAUDIT REQUEST: ${goal.slice(0, 3000)}\n\nINTAKE ANSWERS:\n${intake}\n\nRead the relevant code deeply. Reply with findings, one per line:\n[severity: critical|major|minor] <file:line> <issue> <recommendation>\nThen a short SUMMARY line. Every finding MUST cite file:line.`
+      : `You are the LEADER INVESTIGATING a phenomenon. DO NOT change code — produce an INVESTIGATION REPORT.\n\nQUESTION: ${goal.slice(0, 3000)}\n\nINTAKE ANSWERS:\n${intake}\n\nReply with:\nWHAT: <what is actually happening>\nWHY: <root explanation, evidence-backed>\nOPTIONS: <2-4 options with tradeoffs, one per line>`;
+
 const LEADER_PLAN_PROMPT = (manual: string, needsResearch: boolean): string => {
   const research = needsResearch
     ? `\nSTACK RESEARCH REQUIRED — the operator asked you to research the BEST LANGUAGE FOR THIS USE CASE on the web.
@@ -175,6 +184,43 @@ async function interviewMultiSelect(
     if (remaining.length <= 1) break; // all items picked
   }
   return picked;
+}
+
+/** INTAKE for non-build intents: LLM asks intent-specific questions, then depth. */
+async function runIntakeInterview(
+  ui: ExtensionUIContext,
+  goal: string,
+  intent: Intent,
+): Promise<Map<string, string[]>> {
+  const answers = new Map<string, string[]>();
+  try {
+    const questions = await askPi(
+      `You are running the intake for a ${intent.toUpperCase()} request. Read it carefully: "${goal.slice(0, 2000)}".\n\nAsk 2-3 questions that would let the investigator start immediately, each with 4 concrete answer options (multi-select allowed).\n${intent === "debug" ? "Focus: symptom, how to reproduce, expected vs actual." : intent === "audit" ? "Focus: what to audit, which angle (security/correctness/perf), depth." : "Focus: what phenomenon, when it started, what evidence exists."}\nEmit ONLY JSON: { "questions": [ { "question": "...", "options": ["a)", "b)", "c)", "d)"] } ] }`,
+      120_000,
+    );
+    const cleaned = questions.trim().replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
+    const j = JSON.parse(cleaned) as { questions?: unknown };
+    const qs = Array.isArray(j.questions) ? j.questions : [];
+    for (let i = 0; i < Math.min(qs.length, 3); i += 1) {
+      const q = qs[i] as { question?: unknown; options?: unknown };
+      if (!q || typeof q.question !== "string") continue;
+      const opts = Array.isArray(q.options) ? q.options.map(String).filter(Boolean) : [];
+      if (opts.length === 0) continue;
+      answers.set(
+        `intake:${i}`,
+        await interviewMultiSelect(ui, `Intake (${intent}) — ${q.question}`, opts),
+      );
+    }
+  } catch {
+    /* LLM unavailable — skip intake questions */
+  }
+  const depthPick = await ui.select(`Investigation depth (${intent})?`, [
+    "thorough — full investigation",
+    "quick — fastest reasonable look",
+    "deep — exhaustive, second-pass validation",
+  ], { timeout: 30_000 });
+  answers.set("depth", [depthPick ?? "thorough"]);
+  return answers;
 }
 
 /** GRILL-LITE: the leader proposes 2-4 clarifying questions with a-d options. */
@@ -318,6 +364,8 @@ export interface AgentdevExtensionOptions {
   ) => ReturnType<typeof createOrchestrator>;
   /** Tests inject a deterministic suggester; production = LLM + fallback. */
   constraintSuggest?: ConstraintSuggester;
+  /** Tests stub the intent classifier; production = LLM + heuristic fallback. */
+  intentClassifier?: (text: string) => Promise<string | null>;
   /** Tests inject no clarifications; production = LLM grill-lite. */
   clarifyingQuestions?: (goal: string) => Promise<ClarifyingQuestion[]>;
   /** Project cwd for toggle persistence (tests pass a tmp dir). */
@@ -358,6 +406,8 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
   let uiCtx: ExtensionUIContext | null = null;
   /** Precomputed interview answers (interactive manual phase, AC-MANUAL-*). */
   let pendingAnswers = new Map<string, string[]>();
+  /** Auto-detected intent of the current message (build/debug/audit/investigate). */
+  let pendingIntent: Intent = "build";
 
   const ensureOrchestrator = (): ReturnType<typeof createOrchestrator> => {
     if (orch) return orch;
@@ -532,6 +582,30 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
         // Interactive manual phase FIRST (pi waits for this hook, so the
         // dialogs appear before the Leader turn): choose-stack →
         // define-constraints → project mode. Answers feed the pipeline.
+        // AUTO-INTENT: classify the message BEFORE any dialogs — the whole
+        // interview + pipeline adapts (build vs debug vs audit vs investigate)
+        const intent = await detectIntent(
+          prompt,
+          opts.intentClassifier ?? classifyWithPi((p2, t) => askPi(p2, t)),
+        );
+        pendingIntent = intent.intent;
+        if (intent.intent !== "build") {
+          ctx.ui.notify(`agentdev: intent detected → ${intent.intent.toUpperCase()} (${intent.source})`, "info");
+          pendingAnswers = await runIntakeInterview(ctx.ui, prompt, intent.intent);
+          const o2 = ensureOrchestrator();
+          setImmediate(() => {
+            o2.start(prompt, { intent: intent.intent }).catch((e) => {
+              console.error(`[agentdev] goal pipeline failed: ${e instanceof Error ? e.message : String(e)}`);
+            });
+          });
+          return {
+            systemPrompt: `${event.systemPrompt}\n\n${LEADER_INTAKE_PROMPT(
+              intent.intent,
+              manualSummary(pendingAnswers, { existingRepo: false, stack: null }),
+              prompt,
+            )}`,
+          };
+        }
         const facts = detectCodebase(cwd);
         // make the codebase analysis VISIBLE before any stack question
         if (facts.stack) {
@@ -592,7 +666,7 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
         if (!plan) {
           console.log(`[agentdev] leader turn did not produce a plan — consensus fallback`);
         }
-        orch.acceptLeaderPlanForLatest(plan, stack);
+        orch.acceptLeaderPlanForLatest(plan, stack, text);
       });
 
       // AC-TOGGLE-1: orchestration tools are registered (gated on the toggle).

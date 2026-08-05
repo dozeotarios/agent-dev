@@ -612,6 +612,76 @@ describe("orchestrator (AC-DOD-1): full pipeline with recorded agents", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
+  it("DEBUG intent: leader finds root cause → fix plan approved → fix worker → commit", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-debug-"));
+    const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
+    const fs = require("node:fs") as typeof import("node:fs");
+    const { writeFileSync } = fs;
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd });
+    execFileSync("git", ["config", "user.name", "t"], { cwd });
+    fs.writeFileSync(join(cwd, "seed.txt"), "seed");
+    execFileSync("git", ["add", "-A"], { cwd });
+    execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd });
+    const wt = join(cwd, "wt");
+    const approvals: string[] = [];
+    let committed = false;
+    const orch = createOrchestrator(
+      fakePorts({
+        spawnWorker: (ctx) => ({
+          goalId: ctx.goalId, storyId: ctx.storyId, worktree: ctx.worktree,
+          paneId: "p", workspaceId: "w", name: "n", reportPath: "",
+        }),
+        waitForWorker: () => "done",
+        teardownWorker: () => undefined,
+        confirmPlan: async (summary) => {
+          approvals.push(summary);
+          return { approved: true };
+        },
+        confirmCommit: () => {
+          committed = true;
+          return true;
+        },
+      }),
+      { cwd, createWorktree: () => wt, git: fakeGit },
+    );
+    const pending = orch.start("login fails on safari", { intent: "debug" });
+    await new Promise((r) => setTimeout(r, 100)); // waiter registers
+    orch.acceptLeaderPlanForLatest(
+      null,
+      null,
+      "ROOTCAUSE: the session cookie is missing SameSite\nEVIDENCE: src/auth.js:42\nFIXPLAN: src/auth.js — set SameSite=Lax",
+    );
+    const run = await pending;
+    expect(run.step).toBe("done");
+    expect(approvals.length).toBe(1);
+    expect(approvals[0]).toContain("ROOTCAUSE");
+    expect(committed).toBe(true);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("AUDIT intent: the leader's findings become the report — no gate, no commit", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-audit-"));
+    const orch = createOrchestrator(fakePorts(), { cwd, createWorktree: fakeWorktree, git: fakeGit });
+    const pending = orch.start("audit the auth handling", { intent: "audit" });
+    await new Promise((r) => setTimeout(r, 100));
+    orch.acceptLeaderPlanForLatest(
+      null,
+      null,
+      "[critical] src/auth.js:42 — token not validated\n[minor] src/auth.js:77 — verbose logging\nSUMMARY: 2 findings",
+    );
+    const run = await pending;
+    expect(run.step).toBe("done");
+    // the report is persisted on disk
+    const { readFileSync, readdirSync } = require("node:fs") as typeof import("node:fs");
+    const goals = readdirSync(join(cwd, ".agentdev", "goals"));
+    expect(goals.length).toBe(1);
+    const report = readFileSync(join(cwd, ".agentdev", "goals", goals[0]!, "report.md"), "utf8");
+    expect(report).toContain("AUDIT report");
+    expect(report).toContain("[critical]");
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
   it("skipConsensus: operator opt-out skips the whole loop", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-skip-"));
     const asks: string[] = [];

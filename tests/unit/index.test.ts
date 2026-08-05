@@ -59,6 +59,7 @@ function loadExtension(opts?: LoadOpts | string) {
     cwd: cwd ?? tmpCwd(),
     // deterministic constraint candidates — never a real LLM call in tests
     clarifyingQuestions: (typeof opts !== "string" && opts?.clarify) || (async () => []),
+    intentClassifier: async () => "build",
     constraintSuggest: async () => [
       { category: "do", items: [{ id: "do-1", text: "deterministic do", appliesWhen: [] }] },
       { category: "dont", items: [{ id: "dont-1", text: "deterministic dont", appliesWhen: [] }] },

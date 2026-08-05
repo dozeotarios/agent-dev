@@ -21,6 +21,7 @@ import { detectCodebase } from "./map-codebase";
 import { extractGlossary } from "./define-language";
 import { createInterview, type ConstraintCategory } from "./define-constraints";
 import { createConsensusLoop, isHighRisk, validatePlanOutput, type PlanOutput, type Role } from "./ralplan";
+import type { Intent } from "./intent";
 import { PLANNER_JSON_SCHEMA, FILE_PLAN_INSPECT, RALPLAN_REVISION_HINT } from "./agent-prompts";
 import { planToStories, dispatchPlan, completeWorker, type WorkerAssignment } from "./dispatch";
 import { createWorktreePool, pruneStaleLeases, type WorktreeLeases } from "./worktree";
@@ -47,6 +48,8 @@ export type CrewStep =
   | "review"
   | "gate"
   | "commit"
+  | "debug"
+  | "report"
   | "done"
   | "failed";
 
@@ -156,18 +159,20 @@ interface PersistedGoal {
   stagingWorktree: string | null;
   /** Operator opted OUT of the mandatory consensus review (fast path). */
   skipConsensus: boolean;
+  /** Auto-detected intent (build | debug | audit | investigate). */
+  intent: Intent;
   gate: GateState | null;
 }
 
 export interface Orchestrator {
-  start(goalText: string, opts?: { skipConsensus?: boolean }): Promise<GoalRun>;
+  start(goalText: string, opts?: { skipConsensus?: boolean; intent?: Intent }): Promise<GoalRun>;
   resume(goalId: string): Promise<GoalRun>;
   resumeAll(): Promise<GoalRun[]>;
   confirm(goalId: string, ok: boolean): void;
   /** Leader handoff: the interactive turn's plan + researched stack. */
-  acceptLeaderPlan(goalId: string, plan: PlanOutput | null, stack?: string | null): void;
+  acceptLeaderPlan(goalId: string, plan: PlanOutput | null, stack?: string | null, text?: string | null): void;
   /** Leader handoff without an id (index.ts agent_end → latest live goal). */
-  acceptLeaderPlanForLatest(plan: PlanOutput | null, stack?: string | null): void;
+  acceptLeaderPlanForLatest(plan: PlanOutput | null, stack?: string | null, text?: string | null): void;
   /** Take the operator's plan-changes feedback (routed to the next leader turn). */
   consumePlanRevision(): string | null;
   status(goalId: string): GoalRun | null;
@@ -275,6 +280,8 @@ export function createOrchestrator(
   interface LeaderHandoff {
     plan: PlanOutput | null;
     stack: string | null;
+    /** The leader's RAW reply (the report/fix-plan for non-build intents). */
+    text: string | null;
   }
   /** Pending leader-plan waits, keyed by goalId (AC-LEADER-1 handoff). */
   const leaderWaiters = new Map<string, { resolve: (h: LeaderHandoff) => void; timer: NodeJS.Timeout }>();
@@ -318,15 +325,21 @@ export function createOrchestrator(
     const run = toRun(p);
     runs.set(p.goalId, run);
     try {
-      await stepManual(p);
-      await stepConsensus(p);
-      await stepDispatch(p);
-      await stepBuild(p);
-      await stepReview(p);
-      await stepGate(p);
-      await stepCommit(p);
-      await stepAutoclose(p);
-      p.step = "done";
+      if (p.intent === "build") {
+        await stepManual(p);
+        await stepConsensus(p);
+        await stepDispatch(p);
+        await stepBuild(p);
+        await stepReview(p);
+        await stepGate(p);
+        await stepCommit(p);
+        await stepAutoclose(p);
+        p.step = "done";
+      } else if (p.intent === "debug") {
+        await stepDebug(p);
+      } else {
+        await stepReport(p); // audit | investigate — the report is the deliverable
+      }
       persist(p);
       run.step = "done";
       ports.notify(`agentdev: goal ${p.goalId} complete — commit-ready (${p.mode}).`);
@@ -403,7 +416,7 @@ export function createOrchestrator(
           }
           const timer = setTimeout(() => {
             leaderWaiters.delete(p.goalId);
-            resolve({ plan: null, stack: null });
+            resolve({ plan: null, stack: null, text: null });
           }, leaderPlanTimeoutMs);
           leaderWaiters.set(p.goalId, { resolve, timer });
         });
@@ -630,6 +643,113 @@ export function createOrchestrator(
     p.plan = parsed;
     p.approved = true;
     p.step = "dispatch";
+    persist(p);
+  }
+
+/** Shared leader-handoff wait (build: the plan; debug/report: the reply). */
+  const awaitLeaderHandoff = (goalId: string): Promise<LeaderHandoff> =>
+    new Promise((resolve) => {
+      const buffered = bufferedHandoff;
+      if (buffered) {
+        bufferedHandoff = null;
+        resolve(buffered);
+        return;
+      }
+      const timer = setTimeout(() => {
+        leaderWaiters.delete(goalId);
+        resolve({ plan: null, stack: null, text: null });
+      }, leaderPlanTimeoutMs);
+      leaderWaiters.set(goalId, { resolve, timer });
+    });
+
+  /** DEBUG pipeline: leader investigates → fix-plan approval → fix worker → verify → gate. */
+  async function stepDebug(p: PersistedGoal): Promise<void> {
+    if (p.step !== "debug") return;
+    if (!liveGoals.has(p.goalId)) {
+      // resumed debug goal without a live leader turn — the reply is lost
+      throw new Error("debug goal resumed without a live investigation — re-run the goal");
+    }
+    const handoff = await awaitLeaderHandoff(p.goalId);
+    const text = handoff.text ?? "";
+    if (!text.trim()) throw new Error("debug: the leader produced no findings");
+    const rootCause = (text.match(/ROOTCAUSE:\s*([^\n]+)/i)?.[1] ?? "").trim();
+    const fixPlan =
+      (text.match(/FIXPLAN:\s*([\s\S]*?)(?=\nNO_FIX|$)/i)?.[1] ?? "").trim() ||
+      (text.split(/\n(?=ROOTCAUSE|EVIDENCE|NO_FIX)/i)[0] ?? "").slice(0, 1200);
+    if (text.includes("NO_FIX")) {
+      // not fixable from the repo alone → the findings ARE the deliverable
+      const report = `# Debug report — ${p.goalId}\n\n${text.trim()}`;
+      writeFileSync(join(goalDir(cwd, p.goalId), "report.md"), report, "utf8");
+      ports.notify(`agentdev: DEBUG findings saved — not fixable from the repo alone (${p.goalId})`, "warning");
+      p.step = "done";
+      persist(p);
+      return;
+    }
+    // approval checkpoint on the fix plan (same gate as build plans)
+    const decision = await ports.confirmPlan(
+      `ROOTCAUSE: ${rootCause || "(not stated)"}\n\nFIXPLAN:\n${fixPlan.slice(0, 1500)}`,
+    );
+    if (!decision.approved) {
+      throw new Error(`debug fix plan rejected: ${decision.feedback ?? "no feedback"}`);
+    }
+    // one worktree + a fix worker (tests first, commits, reports)
+    const wt = createWorktree(baseRepo, Math.floor(Math.random() * 1e6));
+    const worker = await ports.spawnWorker({
+      goalId: p.goalId,
+      storyId: "debug-fix",
+      worktree: wt,
+      criteria: [`ROOTCAUSE: ${rootCause}`, `FIXPLAN: ${fixPlan.slice(0, 2000)}`],
+      goalText: p.goalText,
+      stack: p.stack,
+      mode: "direct-PR",
+    });
+    const outcome = await ports.waitForWorker(worker);
+    if (outcome !== "done") {
+      throw new Error(`debug fix worker ${outcome}`);
+    }
+    const v = await ports.verifyStory(wt);
+    if (!v.ok) {
+      throw new Error(`debug fix broke the suite: ${v.output.slice(0, 300)}`);
+    }
+    await ports.teardownWorker(worker);
+    // gate + commit (direct-PR semantics: operator confirms)
+    const gate = createCommitGate("direct-PR", {
+      load: () => readJson<GateState>(gateFile(goalDir(cwd, p.goalId))),
+      save: (st) => writeJson(gateFile(goalDir(cwd, p.goalId)), st),
+    });
+    gate.markCommitReady();
+    p.gate = gate.state();
+    persist(p);
+    const ok = await ports.confirmCommit(p.goalId, "debug fix commit-ready");
+    if (!ok) throw new Error("operator rejected the debug fix");
+    gate.confirm();
+    const r = performCommit(gate, wt, `fix: ${(rootCause || "bug fix").slice(0, 60)}`, {
+      ...(gitRunner ? { git: gitRunner } : {}),
+    });
+    p.gate = gate.state();
+    persist(p);
+    ports.notify(`agentdev: debug fix committed → ${r.hash ?? "skipped"} (${p.goalId})`);
+    p.step = "done";
+    persist(p);
+  }
+
+  /** AUDIT / INVESTIGATE pipeline: the leader's reply IS the deliverable. */
+  async function stepReport(p: PersistedGoal): Promise<void> {
+    if (p.step !== "report") return;
+    if (!liveGoals.has(p.goalId)) {
+      throw new Error(`${p.intent} goal resumed without a live investigation — re-run the goal`);
+    }
+    const handoff = await awaitLeaderHandoff(p.goalId);
+    const text = handoff.text ?? "";
+    if (!text.trim()) throw new Error(`${p.intent}: the leader produced no report`);
+    const report = `# ${p.intent.toUpperCase()} report — ${p.goalId}\n\n${text.trim()}`;
+    writeFileSync(join(goalDir(cwd, p.goalId), "report.md"), report, "utf8");
+    ports.notify(
+      `agentdev: ${p.intent.toUpperCase()} REPORT (${p.goalId}) — saved to .agentdev/goals/${p.goalId}/report.md`,
+    );
+    // surface a bounded excerpt in the session
+    ports.notify(`agentdev: ${text.trim().slice(0, 900)}`, "info");
+    p.step = "done";
     persist(p);
   }
 
@@ -1034,13 +1154,14 @@ export function createOrchestrator(
   // ---- public API ----
 
   return {
-    async start(goalText: string, startOpts: { skipConsensus?: boolean } = {}): Promise<GoalRun> {
+    async start(goalText: string, startOpts: { skipConsensus?: boolean; intent?: Intent } = {}): Promise<GoalRun> {
       if (!goalText.trim()) throw new Error("goal must be non-empty");
       const goalId = `goal-${Date.now().toString(36)}`;
+      const intent: Intent = startOpts.intent ?? "build";
       const p: PersistedGoal = {
         goalId,
         goalText: goalText.trim(),
-        step: "manual",
+        step: intent === "build" ? "manual" : intent === "debug" ? "debug" : "report",
         approved: false,
         plan: null,
         stack: null,
@@ -1051,6 +1172,7 @@ export function createOrchestrator(
         storyFiles: {},
         stagingWorktree: null,
         skipConsensus: startOpts.skipConsensus ?? false,
+        intent,
         gate: null,
       };
       liveGoals.add(goalId); // the interactive leader turn will hand its plan
@@ -1058,12 +1180,12 @@ export function createOrchestrator(
       return runPipeline(p);
     },
 
-    acceptLeaderPlan(goalId: string, plan: PlanOutput | null, stack: string | null = null): void {
+    acceptLeaderPlan(goalId: string, plan: PlanOutput | null, stack: string | null = null, text: string | null = null): void {
       const waiter = leaderWaiters.get(goalId);
       if (!waiter) return; // no wait (consensus already running / not waiting)
       clearTimeout(waiter.timer);
       leaderWaiters.delete(goalId);
-      waiter.resolve({ plan, stack });
+      waiter.resolve({ plan, stack, text });
     },
 
     consumePlanRevision(): string | null {
@@ -1074,21 +1196,21 @@ export function createOrchestrator(
       return null;
     },
 
-    acceptLeaderPlanForLatest(plan: PlanOutput | null, stack: string | null = null): void {
+    acceptLeaderPlanForLatest(plan: PlanOutput | null, stack: string | null = null, text: string | null = null): void {
       const entries = [...leaderWaiters.entries()];
       if (entries.length === 0) {
         // A follow-up agent_end (tool-loop continuation) delivers null with no
         // waiter pending — buffering it would poison the NEXT goal's waiter
         // (stale "no plan" consumed instead of waiting for its own plan).
-        if (plan !== null || stack !== null) {
-          bufferedHandoff = { plan, stack }; // consumed by the next waiter (race)
+        if (plan !== null || stack !== null || text !== null) {
+          bufferedHandoff = { plan, stack, text }; // consumed by the next waiter (race)
         }
         return;
       }
       const [goalId, waiter] = entries[entries.length - 1]; // serial turns → latest
       clearTimeout(waiter.timer);
       leaderWaiters.delete(goalId);
-      waiter.resolve({ plan, stack });
+      waiter.resolve({ plan, stack, text });
     },
 
     async resume(goalId: string): Promise<GoalRun> {
