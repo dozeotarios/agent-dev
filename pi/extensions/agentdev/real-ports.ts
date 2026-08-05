@@ -114,6 +114,22 @@ export function createRealPorts(opts: RealPortsOptions): OrchestratorPorts {
     async steerWorker(w, text) {
       crewSteerWorker(ports.adapter, w, text);
     },
+    async confirmPlan(summary) {
+      // interactive dialog via the OperatorUI; headless-safe default = approve
+      try {
+        const pick = await ui.select(
+          "APPROVE THE PLAN? (this is what the crew will build)",
+          [{ value: "approve", label: "✅ Looks good — proceed to review" }, { value: "changes", label: "🔁 I want changes" }],
+        );
+        if (pick === "changes") {
+          const feedback = await ui.input("What changes do you want?", "");
+          return { approved: false, feedback: feedback ?? "" };
+        }
+        return { approved: true };
+      } catch {
+        return { approved: true }; // dialog unavailable (headless) → approve
+      }
+    },
     async teardownWorker(w, keepOpen) {
       crewTeardownWorker(ports.adapter, w, keepOpen);
     },

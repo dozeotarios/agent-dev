@@ -97,6 +97,12 @@ export interface OrchestratorPorts {
   ): CrewOutcome | Promise<CrewOutcome>;
   /** Steering (the reference model model): guidance into the worker's live pane. */
   steerWorker(w: CrewWorker, text: string): void | Promise<void>;
+  /**
+   * PLAN-APPROVAL checkpoint (before ralplan): the operator sees the plan
+   * summary and confirms it or requests changes. Changes route the next
+   * interactive message as a revision to the leader.
+   */
+  confirmPlan(summary: string): Promise<{ approved: boolean; feedback?: string }>;
   /** keepOpen=true leaves the pane up for inspection (fail-closed teardown). */
   teardownWorker(w: CrewWorker, keepOpen?: boolean): void | Promise<void>;
   spawnSubleader(input: {
@@ -162,6 +168,8 @@ export interface Orchestrator {
   acceptLeaderPlan(goalId: string, plan: PlanOutput | null, stack?: string | null): void;
   /** Leader handoff without an id (index.ts agent_end → latest live goal). */
   acceptLeaderPlanForLatest(plan: PlanOutput | null, stack?: string | null): void;
+  /** Take the operator's plan-changes feedback (routed to the next leader turn). */
+  consumePlanRevision(): string | null;
   status(goalId: string): GoalRun | null;
   all(): GoalRun[];
 }
@@ -272,6 +280,8 @@ export function createOrchestrator(
   const leaderWaiters = new Map<string, { resolve: (h: LeaderHandoff) => void; timer: NodeJS.Timeout }>();
   /** Handoff that arrived before its waiter registered (races) — consumed next. */
   let bufferedHandoff: LeaderHandoff | null = null;
+  /** Operator plan-changes feedback per goal (routed to the next leader turn). */
+  const pendingPlanRevisions = new Map<string, string>();
 
   const loadPersisted = (goalId: string): PersistedGoal | null =>
     readJson<PersistedGoal>(stateFile(goalDir(cwd, goalId)));
@@ -381,37 +391,59 @@ export function createOrchestrator(
     // timeout or unparseable output falls back to consensus.
     let leaderPlan: PlanOutput | null = null;
     if (waitForLeaderPlan && liveGoals.has(p.goalId)) {
-      const handoff = await new Promise<LeaderHandoff>((resolve) => {
-        const buffered = bufferedHandoff;
-        if (buffered) {
-          bufferedHandoff = null;
-          resolve(buffered);
-          return;
+      // PLAN-APPROVAL LOOP: the operator confirms the plan (or requests
+      // changes — the next interactive message revises it) BEFORE ralplan.
+      for (;;) {
+        const handoff = await new Promise<LeaderHandoff>((resolve) => {
+          const buffered = bufferedHandoff;
+          if (buffered) {
+            bufferedHandoff = null;
+            resolve(buffered);
+            return;
+          }
+          const timer = setTimeout(() => {
+            leaderWaiters.delete(p.goalId);
+            resolve({ plan: null, stack: null });
+          }, leaderPlanTimeoutMs);
+          leaderWaiters.set(p.goalId, { resolve, timer });
+        });
+        leaderPlan = handoff.plan;
+        // researched stack (choose-stack research path) applies even when the
+        // plan fails validation — consensus then plans with the real stack
+        if (p.stack === "research") {
+          if (handoff.stack) {
+            p.stack = handoff.stack;
+            ports.notify(`agentdev: researched stack → ${p.stack}`);
+            persist(p);
+          } else {
+            ports.notify(`agentdev: researched stack unresolved — defaulting to typescript`, "warning");
+            p.stack = "typescript";
+            persist(p);
+          }
         }
-        const timer = setTimeout(() => {
-          leaderWaiters.delete(p.goalId);
-          resolve({ plan: null, stack: null });
-        }, leaderPlanTimeoutMs);
-        leaderWaiters.set(p.goalId, { resolve, timer });
-      });
-      leaderPlan = handoff.plan;
-      // researched stack (choose-stack research path) applies even when the
-      // plan fails validation — consensus then plans with the real stack
-      if (p.stack === "research") {
-        if (handoff.stack) {
-          p.stack = handoff.stack;
-          ports.notify(`agentdev: researched stack → ${p.stack}`);
-          persist(p);
-        } else {
-          // the leader never emitted a resolvable STACK: — make it visible
-          ports.notify(`agentdev: researched stack unresolved — defaulting to typescript`, "warning");
-          p.stack = "typescript";
-          persist(p);
+        // PLAN-APPROVAL checkpoint: show the plan BEFORE ralplan — approve or
+        // request changes (the next message revises; this loop waits for it)
+        if (leaderPlan && validatePlanOutput(leaderPlan, { deliberate }).ok) {
+          ports.notify(`agentdev: PLAN READY — awaiting your approval before review`);
+          const decision = await ports.confirmPlan(planSummary(leaderPlan, p.goalText));
+          if (!decision.approved) {
+            ports.notify(
+              `agentdev: plan changes requested — type them as your next message; the leader will revise`,
+              "warning",
+            );
+            if (typeof decision.feedback === "string" && decision.feedback.trim()) {
+              pendingPlanRevisions.set(p.goalId, decision.feedback.trim());
+            }
+            continue; // wait for the revised plan (next agent_end)
+          }
+          ports.notify(`agentdev: plan approved by operator — running the checks`);
+          break; // approved → proceed to consensus / intensity handling
         }
+        // no valid plan (timeout / unparseable) → fall through to fresh consensus
+        break;
       }
-      // ralplan is MANDATORY by default: the leader plan seeds the consensus
-      // loop as round-1 draft (Planner refines, doesn't re-draft). Only an
-      // explicit operator opt-out (consensus dialog → no-fast) skips it.
+      // ralplan: the leader plan seeds the loop as round-1 draft. Only an
+      // explicit operator opt-out (depth dialog → none) skips it.
       if (p.skipConsensus && leaderPlan && validatePlanOutput(leaderPlan, { deliberate }).ok) {
         p.plan = leaderPlan;
         p.approved = true;
@@ -1034,6 +1066,14 @@ export function createOrchestrator(
       waiter.resolve({ plan, stack });
     },
 
+    consumePlanRevision(): string | null {
+      for (const [goalId, feedback] of pendingPlanRevisions) {
+        pendingPlanRevisions.delete(goalId);
+        return feedback;
+      }
+      return null;
+    },
+
     acceptLeaderPlanForLatest(plan: PlanOutput | null, stack: string | null = null): void {
       const entries = [...leaderWaiters.entries()];
       if (entries.length === 0) {
@@ -1298,6 +1338,25 @@ function readWorkerReportSafe(path: string): string {
   } catch {
     return "";
   }
+}
+
+/** Compact plan summary shown at the approval checkpoint. */
+function planSummary(plan: PlanOutput, goalText: string): string {
+  const fp = plan.filePlan;
+  const stories = (plan.stories ?? []).map(
+    (st) => `${st.id} [${st.criteria.length} criteria${st.bcps ? `, ${st.bcps}bcp` : ""}]`,
+  );
+  const intensity = plan.intensity
+    ? `consensus=${plan.intensity.consensus}, review=${plan.intensity.review}`
+    : "consensus=full, review=full";
+  return [
+    `GOAL: ${goalText.slice(0, 120)}`,
+    `DECISION: ${plan.adr.decision.slice(0, 200)}`,
+    `TOUCH: create[${(fp.create ?? []).join(", ")}] modify[${(fp.modify ?? []).join(", ")}] doNotTouch[${(fp.doNotTouch ?? []).join(", ")}]`,
+    `STORIES: ${stories.length > 0 ? stories.join(" · ") : `${plan.acceptanceCriteria.length} criteria (unsliced)`}`,
+    `INTENSITY: ${intensity}`,
+    `CRITERIA:\n${plan.acceptanceCriteria.slice(0, 5).map((c) => `- ${c.slice(0, 90)}`).join("\n")}`,
+  ].join("\n");
 }
 
 /** Did the worker deliver anything? (committed OR uncommitted changes) */

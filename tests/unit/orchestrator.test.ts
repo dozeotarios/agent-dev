@@ -81,6 +81,7 @@ function fakePorts(overrides: Partial<OrchestratorPorts> = {}): OrchestratorPort
     }),
     sendToSubleader: () => undefined,
     steerWorker: () => undefined,
+    confirmPlan: async () => ({ approved: true }),
     stageMerge: () => tmpdir(),
     verifyStory: () => ({ ok: true, output: "ok", command: "npm test" }),
     sliceContext: () => "// fixture code context",
@@ -577,6 +578,37 @@ describe("orchestrator (AC-DOD-1): full pipeline with recorded agents", () => {
     expect(lensAsks.some((a) => /efficiency reviewer/.test(a))).toBe(false);
     expect(lensAsks.some((a) => /api-contract reviewer/.test(a))).toBe(false);
     expect(lensAsks.some((a) => /domain reviewer/.test(a))).toBe(false);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("PLAN APPROVAL: changes → feedback consumed → revised plan → approved → proceeds", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agentdev-orch-approve-"));
+    const base = fakePorts();
+    const approvals: string[] = [];
+    const orch = createOrchestrator(
+      {
+        ...base,
+        confirmPlan: async (summary) => {
+          approvals.push(summary);
+          if (approvals.length === 1) return { approved: false, feedback: "add input validation" };
+          return { approved: true };
+        },
+      },
+      { cwd, createWorktree: fakeWorktree, git: fakeGit, waitForLeaderPlan: true },
+    );
+    const pending = orch.start("approval goal");
+    // first plan → operator requests changes
+    orch.acceptLeaderPlanForLatest(PLAN);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(orch.consumePlanRevision()).toBe("add input validation");
+    // revised plan arrives → approved → pipeline completes
+    const revised = { ...PLAN, adr: { ...PLAN.adr, decision: "revised decision" } };
+    orch.acceptLeaderPlanForLatest(revised);
+    const run = await pending;
+    expect(run.step).toBe("done");
+    expect(run.plan?.adr.decision).toBe("revised decision");
+    expect(approvals.length).toBe(2);
+    expect(approvals[0]).toContain("GOAL:");
     rmSync(cwd, { recursive: true, force: true });
   });
 

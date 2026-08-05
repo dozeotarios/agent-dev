@@ -514,6 +514,16 @@ export function createAgentdevExtension(opts: AgentdevExtensionOptions = {}): Ag
       pi.on("before_agent_start", async (event, ctx) => {
         // headless crew agents (pi -p) must never capture goals — they ARE the crew
         if (process.env.AGENTDEV_NO_CREW === "1" || process.argv.includes("-p")) return;
+        // PLAN REVISION: the operator requested changes at the approval
+        // checkpoint — this message IS the feedback, not a new goal. The
+        // leader revises the plan; the pipeline re-waits for it.
+        const revision = orch?.consumePlanRevision() ?? null;
+        if (revision) {
+          uiCtx = ctx.ui;
+          return {
+            systemPrompt: `${event.systemPrompt}\n\nThe operator reviewed your plan and wants these changes:\n${revision}\n\nREVISE the plan accordingly — emit the SAME plan JSON schema (with intensity, filePlan, stories). Do NOT start any other work or use tools beyond what revision requires.`,
+          };
+        }
         if (!toggle.isOn()) return; // plain pi when OFF
         const prompt = event.prompt.trim();
         if (!prompt) return;

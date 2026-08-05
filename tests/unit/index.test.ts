@@ -52,6 +52,7 @@ function loadExtension(opts?: LoadOpts | string) {
     acceptLeaderPlanForLatest: (plan: unknown) => {
       leaderPlans.push(plan);
     },
+    consumePlanRevision: () => null,
   };
   const ext = createAgentdevExtension({
     makeOrchestrator: () => fakeOrch as never,
